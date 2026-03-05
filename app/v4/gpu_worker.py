@@ -207,124 +207,47 @@ class GPUWorker(StoppableThread):
     
     def _process_batch(self, batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Обрабатывает батч чанков с правильным извлечением сущностей.
-        
-        Args:
-            batch: список чанков от tokenizer
-            
-        Returns:
-            List[Dict]: результаты с извлечёнными сущностями
+        Обрабатывает батч чанков, используя aggregation_strategy=None как в v1
         """
         if not batch:
             return []
         
         batch_start = time.time()
         
-        # Подготовка тензоров
-        input_ids_list = [chunk['input_ids'] for chunk in batch]
-        attention_mask_list = [chunk['attention_mask'] for chunk in batch]
+        # Подготовка текстов
+        texts = [chunk['original_text'] for chunk in batch]
         
-        # Определяем максимальную длину в батче (для паддинга)
-        max_len = max(len(ids) for ids in input_ids_list)
+        # Используем пайплайн с aggregation_strategy=None (как в v1)
+        # Создаем пайплайн для каждого GPU отдельно
+        if not hasattr(self, 'ner_pipeline'):
+            from transformers import pipeline
+            self.ner_pipeline = pipeline(
+                "ner",
+                model=self.model,
+                tokenizer=self.tokenizer,
+                device=self.device,
+                aggregation_strategy=None  # КЛЮЧЕВОЙ МОМЕНТ!
+            )
         
-        # Паддинг до одинаковой длины
-        padded_input_ids = []
-        padded_attention_mask = []
-        
-        for ids, mask in zip(input_ids_list, attention_mask_list):
-            pad_len = max_len - len(ids)
-            padded_input_ids.append(ids + [self.tokenizer.pad_token_id] * pad_len)
-            padded_attention_mask.append(mask + [0] * pad_len)
-        
-        # Преобразуем в тензоры на GPU
-        input_ids = torch.tensor(padded_input_ids, device=self.device, dtype=torch.long)
-        attention_mask = torch.tensor(padded_attention_mask, device=self.device, dtype=torch.long)
-        
-        # Инференс
-        with torch.no_grad():
-            outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
-        
-        # Получаем логиты и вычисляем предсказания с уверенностью
-        logits = outputs.logits
-        predictions = torch.argmax(logits, dim=-1)
-        
-        # Вычисляем confidence через softmax (как в v1)
-        probs = F.softmax(logits, dim=-1)
-        confidence = torch.max(probs, dim=-1).values
+        # Получаем сырые предсказания для всех текстов в батче
+        try:
+            batch_results = self.ner_pipeline(texts, batch_size=len(texts))
+        except Exception as e:
+            logger.error(f"Ошибка в пайплайне: {e}")
+            batch_results = [[] for _ in texts]
         
         results = []
         
         for i, chunk in enumerate(batch):
-            # Получаем предсказания для этого чанка (обрезаем паддинг)
-            chunk_len = len(chunk['input_ids'])
-            chunk_preds = predictions[i, :chunk_len].cpu().tolist()
-            chunk_conf = confidence[i, :chunk_len].cpu().tolist()
+            # Получаем предсказания для этого чанка
+            token_entities = batch_results[i] if i < len(batch_results) else []
             
-            # Получаем оригинальный текст
-            original_text = chunk.get('original_text', '')
+            # Фильтруем по confidence
+            token_entities = [t for t in token_entities if t['score'] >= self.min_confidence]
             
-            # Получаем токены
-            tokens = self.tokenizer.convert_ids_to_tokens(chunk['input_ids'])
+            # ИЗВЛЕКАЕМ СУЩНОСТИ ИСПОЛЬЗУЯ ПРОВЕРЕННУЮ ФУНКЦИЮ ИЗ v1
+            entities = self._extract_entities_v1(token_entities, chunk['original_text'])
             
-            # Получаем offset_mapping для точных позиций
-            try:
-                inputs = self.tokenizer(
-                    original_text,
-                    return_offsets_mapping=True,
-                    max_length=self.max_tokens,
-                    truncation=True
-                )
-                offsets = inputs['offset_mapping']
-            except:
-                offsets = [(0, 0)] * len(tokens)
-            
-            # Создаём список токенов с предсказаниями (как в v1)
-            token_entities = []
-            for j, (token, pred_id, conf) in enumerate(zip(tokens, chunk_preds, chunk_conf)):
-                if j >= len(offsets):
-                    break
-                    
-                # Пропускаем специальные токены
-                if token in ['<s>', '</s>', '<pad>']:
-                    continue
-                
-                # Получаем метку
-                label = self.model.config.id2label.get(pred_id, 'O')
-                
-                # Пропускаем если уверенность ниже порога
-                if conf < self.min_confidence:
-                    continue
-                
-                token_entities.append({
-                    'word': token,
-                    'entity': label,
-                    'score': conf,
-                    'start': offsets[j][0] if offsets[j] else 0,
-                    'end': offsets[j][1] if offsets[j] else 0
-                })
-            
-            # --- НОВАЯ ПРОВЕРКА ПЕРЕД ВЫЗОВОМ ФУНКЦИИ ---
-            logger.warning(f">>> ПЕРЕД ВЫЗОВОМ: для документа {chunk['id']}, чанк {chunk['chunk_id']}")
-            logger.warning(f">>> Размер token_entities перед функцией: {len(token_entities)}")
-            if token_entities:
-                # Покажем только те, что не O, чтобы не засорять лог
-                non_o_tokens = [t for t in token_entities if t['entity'] != 'O']
-                logger.warning(f">>> Из них не-O (целевых) токенов: {len(non_o_tokens)}")
-                if non_o_tokens:
-                    logger.warning(f">>> Первый целевой токен: {non_o_tokens[0]['word']} -> {non_o_tokens[0]['entity']}")
-            else:
-                logger.warning(">>> ВНИМАНИЕ: token_entities пуст перед вызовом функции!")
-            # --- КОНЕЦ ПРОВЕРКИ ---
-
-            # Извлекаем сущности используя правильную BIO-логику из v1
-            entities = self._extract_entities_from_tokens(token_entities, original_text)
-            
-            # --- ПРОВЕРКА СРАЗУ ПОСЛЕ ВЫЗОВА ---
-            logger.warning(f"<<< ПОСЛЕ ВЫЗОВА: функция вернула {len(entities)} сущностей")
-            if entities:
-                logger.warning(f"<<< Первая найденная сущность: {entities[0]}")
-            # --- КОНЕЦ ПРОВЕРКИ ---
-
             # Формируем результат
             result = {
                 'id': chunk['id'],
@@ -332,7 +255,7 @@ class GPUWorker(StoppableThread):
                 'total_chunks': chunk['total_chunks'],
                 'entities': entities,
                 'stats': {
-                    'tokens': chunk_len,
+                    'tokens': len(chunk['input_ids']),
                     'entities_count': len(entities)
                 }
             }
@@ -341,7 +264,7 @@ class GPUWorker(StoppableThread):
             
             # Обновляем статистику
             self.stats['processed_docs'].add(chunk['id'])
-            self.stats['total_tokens'] += chunk_len
+            self.stats['total_tokens'] += len(chunk['input_ids'])
             self.stats['entities_found'] += len(entities)
             
             for entity in entities:
@@ -349,109 +272,20 @@ class GPUWorker(StoppableThread):
                 if etype in self.stats['entities_by_type']:
                     self.stats['entities_by_type'][etype] += 1
         
-        # Обновляем время инференса
         self.stats['inference_time'] += time.time() - batch_start
+        self.stats['processed_chunks'] += len(batch)
         
         return results
-    
-    def _get_entity_type(self, label: str) -> str:
-        """Извлекает тип сущности из BIO-тега."""
-        if label.startswith(('B-', 'I-')):
-            return label[2:]
-        return label
-    
-    def _merge_token_entities(self, token_entities: List[Dict], original_text: str) -> Optional[Dict]:
+
+    def _extract_entities_v1(self, token_entities: List[Dict], original_text: str) -> List[Dict]:
         """
-        Объединяет токены одной сущности в целое слово с правильными пробелами.
-        """
-        if not token_entities:
-            return None
-        
-        # Сортируем токены по позиции
-        sorted_tokens = sorted(token_entities, key=lambda x: x['start'])
-        
-        # Получаем текст напрямую из оригинального текста по позициям
-        start_pos = sorted_tokens[0]['start']
-        end_pos = sorted_tokens[-1]['end']
-        
-        # Вырезаем текст из оригинала
-        full_text = original_text[start_pos:end_pos]
-        
-        # Очищаем от лишних пробелов, но сохраняем внутренние
-        full_text = ' '.join(full_text.split())
-        
-        # Если текст пустой или слишком короткий, пробуем склеить токены
-        if not full_text or len(full_text) < 2:
-            # Запасной вариант: склейка токенов
-            text_parts = []
-            last_end = None
-            
-            for token in sorted_tokens:
-                # Убираем символ подчёркивания в начале токена
-                word = token['word'].replace('▁', '')
-                
-                # Добавляем пробел, если это не первый токен и есть разрыв
-                if last_end is not None and token['start'] > last_end:
-                    if original_text[last_end:token['start']].strip():
-                        text_parts.append(' ')
-                
-                text_parts.append(word)
-                last_end = token['end']
-            
-            full_text = ''.join(text_parts)
-            full_text = ' '.join(full_text.split())
-        
-        # 🔍 Новая фильтрация: отбрасываем явный мусор
-        # 1. Слишком короткие (меньше 2 символов)
-        if len(full_text) < 2:
-            return None
-        
-        # 2. Состоит только из пунктуации или пробелов
-        if all(c in '.,!?;:-–—()[]{}«»""\'\' ' for c in full_text):
-            return None
-        
-        # 3. Начинается с пробела или пунктуации (кроме дефиса в начале слова)
-        if full_text and full_text[0] in '.,!?;:()[]{}«»""\'':
-            return None
-        
-        # 4. Содержит явные признаки мусора (цифры+буквы вперемешку без смысла)
-        # Но оставляем нормальные слова с цифрами (например, "1999 год")
-        
-        # Берём минимальный score
-        confidence = min(t['score'] for t in sorted_tokens)
-        
-        # Определяем тип
-        first_label = sorted_tokens[0]['entity']
-        entity_type = self.ENTITY_GROUP_MAP.get(first_label, 'MISC')
-        
-        # 5. Если тип не LOC/PER/ORG - отбрасываем (если не нужны DATE и MISC)
-        if entity_type not in ['LOC', 'PER', 'ORG']:
-            return None
-        
-        result = {
-            'text': full_text,
-            'type': entity_type,
-            'confidence': round(confidence, 4)
-        }
-        
-        # Опционально добавляем позиции
-        if self.include_positions:
-            result['positions'] = [
-                {'start': t['start'], 'end': t['end']} 
-                for t in sorted_tokens
-            ]
-        
-        return result
-    
-    def _extract_entities_from_tokens(self, token_entities: List[Dict], original_text: str) -> List[Dict]:
-        """
-        Извлекает сущности из списка токенов с BIO-разметкой.
-        ТОЧНАЯ КОПИЯ ИЗ v1 extractor.py
+        Улучшенная версия с обработкой ошибочных B- токенов
         """
         if not token_entities:
             return []
         
-        entities = []
+        # Группируем токены в целые сущности
+        grouped_entities = []
         i = 0
         
         while i < len(token_entities):
@@ -462,32 +296,230 @@ class GPUWorker(StoppableThread):
                 i += 1
                 continue
             
-            # Начало новой сущности (B-)
+            # Начало новой сущности (B- или первая)
             if current['entity'].startswith('B-') or i == 0:
                 # Собираем все токены этой сущности
                 entity_tokens = [current]
+                current_type = self._get_entity_type(current['entity'])
                 j = i + 1
                 
                 while j < len(token_entities):
                     next_token = token_entities[j]
-                    # Продолжение сущности (I- того же типа)
-                    if next_token['entity'].startswith('I-') and \
-                    self._get_entity_type(next_token['entity']) == self._get_entity_type(current['entity']):
+                    next_type = self._get_entity_type(next_token['entity'])
+                    
+                    # Проверяем, может ли следующий токен быть частью текущей сущности
+                    can_be_continuation = False
+                    
+                    # Случай 1: Правильное продолжение (I- того же типа)
+                    if next_token['entity'].startswith('I-') and next_type == current_type:
+                        can_be_continuation = True
+                    
+                    # Случай 2: Ошибочное B- того же типа, но токены идут подряд в тексте
+                    elif next_token['entity'].startswith('B-') and next_type == current_type:
+                        # Проверяем, что между токенами нет пробела или он минимальный
+                        gap = next_token['start'] - entity_tokens[-1]['end']
+                        if gap <= 1:  # нет пробела или только один символ
+                            can_be_continuation = True
+                            # Можно добавить отладку если нужно
+                            # logger.debug(f"  ⚠️ Исправление ошибочного B-: {next_token['word']}")
+                    
+                    if can_be_continuation:
                         entity_tokens.append(next_token)
                         j += 1
                     else:
                         break
                 
                 # Объединяем токены в сущность
-                merged = self._merge_token_entities(entity_tokens, original_text)
+                merged = self._merge_tokens_v1(entity_tokens, original_text)
                 if merged:
-                    entities.append(merged)
+                    grouped_entities.append(merged)
                 
                 i = j
             else:
                 i += 1
         
-        return entities
+        return grouped_entities
+
+    def _merge_tokens_v1(self, token_entities: List[Dict], original_text: str) -> Optional[Dict]:
+        """
+        ТОЧНАЯ КОПИЯ ИЗ v1 merge_token_entities
+        """
+        if not token_entities:
+            return None
+        
+        # Сортируем токены по позиции
+        sorted_tokens = sorted(token_entities, key=lambda x: x['start'])
+        
+        # Собираем текст с пробелами
+        text_parts = []
+        last_end = None
+        
+        for token in sorted_tokens:
+            # Убираем символ подчёркивания в начале токена
+            word = token['word'].replace('▁', '')
+            
+            # Добавляем пробел, если это не первый токен и есть разрыв
+            if last_end is not None and token['start'] > last_end:
+                # Проверяем размер разрыва
+                if token['start'] - last_end >= 1:
+                    text_parts.append(' ')
+            
+            text_parts.append(word)
+            last_end = token['end']
+        
+        full_text = ''.join(text_parts)
+        
+        # Берём минимальный score
+        confidence = min(t['score'] for t in sorted_tokens)
+        
+        # Определяем тип
+        first_label = sorted_tokens[0]['entity']
+        entity_type = self.ENTITY_GROUP_MAP.get(first_label, 'MISC')
+        
+        # В v1 нет фильтрации по длине, но можно добавить
+        if len(full_text) < 2:
+            return None
+        
+        return {
+            'text': full_text,
+            'type': entity_type,
+            'confidence': round(confidence, 4)
+        }
+    
+    def _get_entity_type(self, label: str) -> str:
+        """Извлекает тип сущности из BIO-тега."""
+        if label.startswith(('B-', 'I-')):
+            return label[2:]
+        return label
+    
+    # def _merge_token_entities(self, token_entities: List[Dict], original_text: str) -> Optional[Dict]:
+    #     """
+    #     Объединяет токены одной сущности в целое слово с правильными пробелами.
+    #     """
+    #     if not token_entities:
+    #         return None
+        
+    #     # Сортируем токены по позиции
+    #     sorted_tokens = sorted(token_entities, key=lambda x: x['start'])
+        
+    #     # Получаем текст напрямую из оригинального текста по позициям
+    #     start_pos = sorted_tokens[0]['start']
+    #     end_pos = sorted_tokens[-1]['end']
+        
+    #     # Вырезаем текст из оригинала
+    #     full_text = original_text[start_pos:end_pos]
+        
+    #     # Очищаем от лишних пробелов, но сохраняем внутренние
+    #     full_text = ' '.join(full_text.split())
+        
+    #     # Если текст пустой или слишком короткий, пробуем склеить токены
+    #     if not full_text or len(full_text) < 2:
+    #         # Запасной вариант: склейка токенов
+    #         text_parts = []
+    #         last_end = None
+            
+    #         for token in sorted_tokens:
+    #             # Убираем символ подчёркивания в начале токена
+    #             word = token['word'].replace('▁', '')
+                
+    #             # Добавляем пробел, если это не первый токен и есть разрыв
+    #             if last_end is not None and token['start'] > last_end:
+    #                 if original_text[last_end:token['start']].strip():
+    #                     text_parts.append(' ')
+                
+    #             text_parts.append(word)
+    #             last_end = token['end']
+            
+    #         full_text = ''.join(text_parts)
+    #         full_text = ' '.join(full_text.split())
+        
+    #     # 🔍 Новая фильтрация: отбрасываем явный мусор
+    #     # 1. Слишком короткие (меньше 2 символов)
+    #     if len(full_text) < 2:
+    #         return None
+        
+    #     # 2. Состоит только из пунктуации или пробелов
+    #     if all(c in '.,!?;:-–—()[]{}«»""\'\' ' for c in full_text):
+    #         return None
+        
+    #     # 3. Начинается с пробела или пунктуации (кроме дефиса в начале слова)
+    #     if full_text and full_text[0] in '.,!?;:()[]{}«»""\'':
+    #         return None
+        
+    #     # 4. Содержит явные признаки мусора (цифры+буквы вперемешку без смысла)
+    #     # Но оставляем нормальные слова с цифрами (например, "1999 год")
+        
+    #     # Берём минимальный score
+    #     confidence = min(t['score'] for t in sorted_tokens)
+        
+    #     # Определяем тип
+    #     first_label = sorted_tokens[0]['entity']
+    #     entity_type = self.ENTITY_GROUP_MAP.get(first_label, 'MISC')
+        
+    #     # 5. Если тип не LOC/PER/ORG - отбрасываем (если не нужны DATE и MISC)
+    #     if entity_type not in ['LOC', 'PER', 'ORG']:
+    #         return None
+        
+    #     result = {
+    #         'text': full_text,
+    #         'type': entity_type,
+    #         'confidence': round(confidence, 4)
+    #     }
+        
+    #     # Опционально добавляем позиции
+    #     if self.include_positions:
+    #         result['positions'] = [
+    #             {'start': t['start'], 'end': t['end']} 
+    #             for t in sorted_tokens
+    #         ]
+        
+    #     return result
+    
+    # def _extract_entities_from_tokens(self, token_entities: List[Dict], original_text: str) -> List[Dict]:
+    #     """
+    #     Извлекает сущности из списка токенов с BIO-разметкой.
+    #     ТОЧНАЯ КОПИЯ ИЗ v1 extractor.py
+    #     """
+    #     if not token_entities:
+    #         return []
+        
+    #     entities = []
+    #     i = 0
+        
+    #     while i < len(token_entities):
+    #         current = token_entities[i]
+            
+    #         # Пропускаем не-сущности
+    #         if current['entity'] == 'O':
+    #             i += 1
+    #             continue
+            
+    #         # Начало новой сущности (B-)
+    #         if current['entity'].startswith('B-') or i == 0:
+    #             # Собираем все токены этой сущности
+    #             entity_tokens = [current]
+    #             j = i + 1
+                
+    #             while j < len(token_entities):
+    #                 next_token = token_entities[j]
+    #                 # Продолжение сущности (I- того же типа)
+    #                 if next_token['entity'].startswith('I-') and \
+    #                 self._get_entity_type(next_token['entity']) == self._get_entity_type(current['entity']):
+    #                     entity_tokens.append(next_token)
+    #                     j += 1
+    #                 else:
+    #                     break
+                
+    #             # Объединяем токены в сущность
+    #             merged = self._merge_token_entities(entity_tokens, original_text)
+    #             if merged:
+    #                 entities.append(merged)
+                
+    #             i = j
+    #         else:
+    #             i += 1
+        
+    #     return entities
     
     def get_stats(self) -> Dict[str, Any]:
         """Возвращает статистику работы воркера."""
