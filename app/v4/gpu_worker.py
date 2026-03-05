@@ -396,14 +396,7 @@ class GPUWorker(StoppableThread):
     def _merge_token_entities(self, token_entities: List[Dict], original_text: str) -> Optional[Dict]:
         """
         Объединяет токены одной сущности в целое слово с правильными пробелами.
-        ТОЧНАЯ КОПИЯ ИЗ v1 extractor.py
-        
-        Args:
-            token_entities: список токенов одной сущности
-            original_text: оригинальный текст
-            
-        Returns:
-            Dict: объединённая сущность или None
+        ИСПРАВЛЕННАЯ ВЕРСИЯ: использует оригинальный текст для сохранения пробелов
         """
         if not token_entities:
             return None
@@ -411,26 +404,29 @@ class GPUWorker(StoppableThread):
         # Сортируем токены по позиции
         sorted_tokens = sorted(token_entities, key=lambda x: x['start'])
         
-        # Собираем текст с пробелами
-        text_parts = []
-        last_end = None
+        # Получаем текст напрямую из оригинального текста по позициям
+        start_pos = sorted_tokens[0]['start']
+        end_pos = sorted_tokens[-1]['end']
         
-        for token in sorted_tokens:
-            # Убираем символ подчёркивания в начале токена
-            word = token['word'].replace('▁', '')
-            
-            # Добавляем пробел, если это не первый токен и есть разрыв
-            if last_end is not None and token['start'] > last_end:
-                # Проверяем размер разрыва (если больше 1 символа - это слово)
-                if token['start'] - last_end >= 1:
+        # Вырезаем текст из оригинала (это сохранит все оригинальные пробелы и дефисы)
+        full_text = original_text[start_pos:end_pos]
+        
+        # Нормализуем пробелы (один пробел между словами, но сохраняем дефисы)
+        full_text = ' '.join(full_text.split())
+        
+        # Если текст получился подозрительно коротким, используем запасной вариант
+        if len(full_text) < 2:
+            # Запасной вариант: склейка токенов
+            text_parts = []
+            for token in sorted_tokens:
+                word = token['word'].replace('▁', '')
+                if text_parts and not word.startswith(("'", "-", ".", ",", ")", "(", ":", ";")):
                     text_parts.append(' ')
-            
-            text_parts.append(word)
-            last_end = token['end']
+                text_parts.append(word)
+            full_text = ''.join(text_parts)
+            full_text = ' '.join(full_text.split())
         
-        full_text = ''.join(text_parts)
-        
-        # Берём минимальный score (как в v1)
+        # Берём минимальный score
         confidence = min(t['score'] for t in sorted_tokens)
         
         # Определяем тип
@@ -451,6 +447,52 @@ class GPUWorker(StoppableThread):
             ]
         
         return result
+    
+    def _extract_entities_from_tokens(self, token_entities: List[Dict], original_text: str) -> List[Dict]:
+        """
+        Извлекает сущности из списка токенов с BIO-разметкой.
+        ТОЧНАЯ КОПИЯ ЛОГИКИ ИЗ v1 extractor.py
+        """
+        if not token_entities:
+            return []
+        
+        entities = []
+        i = 0
+        
+        while i < len(token_entities):
+            current = token_entities[i]
+            
+            # Пропускаем не-сущности
+            if current['entity'] == 'O':
+                i += 1
+                continue
+            
+            # Начало новой сущности (B-)
+            if current['entity'].startswith('B-'):
+                # Собираем все токены этой сущности
+                entity_tokens = [current]
+                j = i + 1
+                
+                while j < len(token_entities):
+                    next_token = token_entities[j]
+                    # Продолжение сущности (I- того же типа)
+                    if next_token['entity'].startswith('I-') and \
+                       self._get_entity_type(next_token['entity']) == self._get_entity_type(current['entity']):
+                        entity_tokens.append(next_token)
+                        j += 1
+                    else:
+                        break
+                
+                # Объединяем токены в сущность
+                merged = self._merge_token_entities(entity_tokens, original_text)
+                if merged and len(merged['text']) >= 2:  # Игнорируем слишком короткие
+                    entities.append(merged)
+                
+                i = j
+            else:
+                i += 1
+        
+        return entities
     
     def get_stats(self) -> Dict[str, Any]:
         """Возвращает статистику работы воркера."""
