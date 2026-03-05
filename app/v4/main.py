@@ -87,11 +87,33 @@ class PipelineV4:
         logger.info("🚀 ИНИЦИАЛИЗАЦИЯ КОНВЕЙЕРА V4")
         logger.info("=" * 60)
         logger.info(f"Конфиг: {config_path}")
+        logger.info(f"Лимит документов: {limit if limit else 'без лимита'}")
         logger.info(f"GPU устройств: {len(self.config.gpu_devices)}")
-        logger.info(f"Токенизаторов: {self.config.tokenizer.num_workers}")
+        
+        # Детальная информация по каждому GPU
+        for i, gpu in enumerate(self.config.gpu_devices):
+            logger.info(f"  GPU {i}: device_id={gpu.device_id}, "
+                    f"batch_size={gpu.batch_size}, "
+                    f"precision={gpu.precision}")
+        
+        logger.info(f"Токенизаторов: {self.config.tokenizer.num_workers} "
+                    f"(на {self.config.tokenizer.num_workers} потоках CPU)")
         logger.info(f"Очереди: q1={self.config.queues.queue1_size}, "
-                   f"q2={self.config.queues.queue2_size}, "
-                   f"q3={self.config.queues.queue3_size}")
+                    f"q2={self.config.queues.queue2_size}, "
+                    f"q3={self.config.queues.queue3_size}")
+        
+        # Добавим информацию о модели
+        logger.info(f"Модель: {self.config.model.name}")
+        logger.info(f"max_tokens: {self.config.model.max_tokens}, "
+                    f"overlap: {self.config.model.overlap_ratio}, "
+                    f"min_confidence: {self.config.model.min_confidence}")
+        
+        # Информация о выходном файле
+        logger.info(f"Выходной файл: {self.config.output.path}")
+        logger.info(f"Формат: {self.config.output.format}, "
+                    f"с confidence: {self.config.output.include_confidence}")
+        
+        logger.info("=" * 60)
     
     def _create_gpu_config(self, device_config: GPUDeviceConfig):
         """
@@ -230,7 +252,7 @@ class PipelineV4:
             self.shutdown.stop()
             
     def _print_stats(self) -> None:
-        """Выводит текущую статистику."""
+        """Выводит текущую статистику с разделением на чанки и документы."""
         elapsed = time.time() - self.start_time
         
         # Собираем статистику от всех воркеров
@@ -238,18 +260,14 @@ class PipelineV4:
         writer_stats = self.writer.get_stats() if self.writer else {}
         
         # Суммарная статистика по токенизаторам
-        tokenizer_stats = {
-            'processed_docs': sum(w.get_stats()['processed_docs'] for w in self.tokenizers),
-            'total_chunks': sum(w.get_stats()['total_chunks'] for w in self.tokenizers),
-            'total_tokens': sum(w.get_stats()['total_tokens'] for w in self.tokenizers)
-        }
+        tokenizer_docs = sum(w.get_stats()['processed_docs'] for w in self.tokenizers)
+        tokenizer_chunks = sum(w.get_stats()['total_chunks'] for w in self.tokenizers)
+        tokenizer_tokens = sum(w.get_stats()['total_tokens'] for w in self.tokenizers)
         
         # Суммарная статистика по GPU
-        gpu_stats = {
-            'processed_chunks': sum(w.get_stats()['processed_chunks'] for w in self.gpu_workers),
-            'entities_found': sum(w.get_stats()['entities_found'] for w in self.gpu_workers),
-            'processed_docs': len(set().union(*[w.get_stats()['processed_docs'] for w in self.gpu_workers]))
-        }
+        gpu_chunks = sum(w.get_stats()['processed_chunks'] for w in self.gpu_workers)
+        gpu_entities = sum(w.get_stats()['entities_found'] for w in self.gpu_workers)
+        gpu_docs = len(set().union(*[w.get_stats()['processed_docs'] for w in self.gpu_workers]))
         
         # Размеры очередей
         queue_sizes = {
@@ -258,18 +276,20 @@ class PipelineV4:
             'q3': self.queue3.qsize()
         }
         
+        # Расчет скоростей
+        chunks_per_sec = gpu_chunks / elapsed if elapsed > 0 else 0
+        docs_per_sec = writer_stats.get('completed_docs', 0) / elapsed if elapsed > 0 else 0
+        
         logger.info("-" * 60)
         logger.info(f"📊 СТАТИСТИКА (прошло {elapsed:.1f} сек):")
         logger.info(f"  Очереди: q1={queue_sizes['q1']}, q2={queue_sizes['q2']}, q3={queue_sizes['q3']}")
-        logger.info(f"  Reader: {reader_stats.get('read_docs', 0)} док")
-        logger.info(f"  Tokenizer: {tokenizer_stats['processed_docs']} док -> {tokenizer_stats['total_chunks']} чанков")
-        logger.info(f"  GPU: {gpu_stats['processed_chunks']} чанков, {gpu_stats['entities_found']} сущностей")
-        logger.info(f"  Writer: {writer_stats.get('completed_docs', 0)} док завершено, "
-                   f"{writer_stats.get('total_entities', 0)} сущностей записано")
-        
-        # Скорость
-        docs_per_sec = gpu_stats['processed_docs'] / elapsed if elapsed > 0 else 0
-        logger.info(f"  ⚡ Скорость: {docs_per_sec:.1f} док/сек")
+        logger.info(f"  Reader: прочитано {reader_stats.get('read_docs', 0):,} док")
+        logger.info(f"  Tokenizer: {tokenizer_docs:,} док -> {tokenizer_chunks:,} чанков ({tokenizer_tokens:,} токенов)")
+        logger.info(f"  GPU: {gpu_chunks:,} чанков, {gpu_entities:,} сущностей, уникальных док: {gpu_docs:,}")
+        logger.info(f"  Writer: завершено {writer_stats.get('completed_docs', 0):,} док, "
+                    f"записано {writer_stats.get('total_entities', 0):,} сущностей")
+        logger.info(f"  ⚡ Скорость чанков: {chunks_per_sec:.1f} чанков/сек")
+        logger.info(f"  ⚡ Скорость документов: {docs_per_sec:.1f} док/сек")
         logger.info("-" * 60)
     
     def _shutdown_callback(self) -> None:
@@ -310,19 +330,28 @@ class PipelineV4:
         writer_stats = self.writer.get_stats() if self.writer else {}
         gpu_stats_list = [w.get_stats() for w in self.gpu_workers]
         
+        # Суммарная статистика по GPU
+        total_chunks = sum(s.get('processed_chunks', 0) for s in gpu_stats_list)
+        total_gpu_docs = len(set().union(*[s.get('processed_docs', set()) for s in gpu_stats_list]))
+        
         # Объединяем статистику по сущностям
         entities_by_type = {'LOC': 0, 'PER': 0, 'ORG': 0, 'MISC': 0}
         for gpu_stats in gpu_stats_list:
             for etype, count in gpu_stats.get('entities_by_type', {}).items():
                 entities_by_type[etype] += count
         
+        completed_docs = writer_stats.get('completed_docs', 0)
+        
         stats = {
             'elapsed_time': round(elapsed, 2),
-            'docs_completed': writer_stats.get('completed_docs', 0),
+            'docs_completed': completed_docs,
+            'chunks_processed': total_chunks,
+            'unique_docs_in_gpu': total_gpu_docs,
             'total_entities': writer_stats.get('total_entities', 0),
             'entities_by_type': entities_by_type,
             'bytes_written': writer_stats.get('bytes_written', 0),
-            'docs_per_second': round(writer_stats.get('completed_docs', 0) / elapsed if elapsed > 0 else 0, 2)
+            'chunks_per_second': round(total_chunks / elapsed if elapsed > 0 else 0, 2),
+            'docs_per_second': round(completed_docs / elapsed if elapsed > 0 else 0, 2)
         }
         
         return stats

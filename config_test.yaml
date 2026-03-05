@@ -25,7 +25,7 @@ gpu_devices:
     batch_size: 8
     precision: float16
   - device_id: 1
-    batch_size: 4
+    batch_size: 6
     precision: float16
 
 output:

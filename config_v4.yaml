@@ -13,20 +13,20 @@ model:
   include_positions: false
 
 queues:
-  queue1_size: 10000
-  queue2_size: 20000
-  queue3_size: 5000
+  queue1_size: 5000
+  queue2_size: 1000
+  queue3_size: 2000
 
 tokenizer:
-  num_workers: 4
+  num_workers: 8
   prefetch_size: 100
 
 gpu_devices:
   - device_id: 0
-    batch_size: 16
+    batch_size: 8
     precision: float16
   - device_id: 1
-    batch_size: 12
+    batch_size: 6
     precision: float16
 
 output:
