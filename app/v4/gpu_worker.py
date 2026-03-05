@@ -27,11 +27,12 @@ class GPUWorker(StoppableThread):
     Использует правильную BIO-разметку из v1 для максимального качества.
     """
     
-    # Маппинг BIO-тегов в группы сущностей (из v1)
+    # Маппинг всех возможных BIO-тегов в группы
     ENTITY_GROUP_MAP = {
         'B-LOC': 'LOC', 'I-LOC': 'LOC',
         'B-PER': 'PER', 'I-PER': 'PER',
         'B-ORG': 'ORG', 'I-ORG': 'ORG',
+        # 'B-DATE': 'DATE', 'I-DATE': 'DATE', # Добавили DATE, чтобы он не потерялся при маппинге
         'B-MISC': 'MISC', 'I-MISC': 'MISC'
     }
     
@@ -302,9 +303,28 @@ class GPUWorker(StoppableThread):
                     'end': offsets[j][1] if offsets[j] else 0
                 })
             
+            # --- НОВАЯ ПРОВЕРКА ПЕРЕД ВЫЗОВОМ ФУНКЦИИ ---
+            logger.warning(f">>> ПЕРЕД ВЫЗОВОМ: для документа {chunk['id']}, чанк {chunk['chunk_id']}")
+            logger.warning(f">>> Размер token_entities перед функцией: {len(token_entities)}")
+            if token_entities:
+                # Покажем только те, что не O, чтобы не засорять лог
+                non_o_tokens = [t for t in token_entities if t['entity'] != 'O']
+                logger.warning(f">>> Из них не-O (целевых) токенов: {len(non_o_tokens)}")
+                if non_o_tokens:
+                    logger.warning(f">>> Первый целевой токен: {non_o_tokens[0]['word']} -> {non_o_tokens[0]['entity']}")
+            else:
+                logger.warning(">>> ВНИМАНИЕ: token_entities пуст перед вызовом функции!")
+            # --- КОНЕЦ ПРОВЕРКИ ---
+
             # Извлекаем сущности используя правильную BIO-логику из v1
             entities = self._extract_entities_from_tokens(token_entities, original_text)
             
+            # --- ПРОВЕРКА СРАЗУ ПОСЛЕ ВЫЗОВА ---
+            logger.warning(f"<<< ПОСЛЕ ВЫЗОВА: функция вернула {len(entities)} сущностей")
+            if entities:
+                logger.warning(f"<<< Первая найденная сущность: {entities[0]}")
+            # --- КОНЕЦ ПРОВЕРКИ ---
+
             # Формируем результат
             result = {
                 'id': chunk['id'],
@@ -334,59 +354,6 @@ class GPUWorker(StoppableThread):
         
         return results
     
-    def _extract_entities_from_tokens(self, token_entities: List[Dict], original_text: str) -> List[Dict]:
-        """
-        Извлекает сущности из списка токенов с BIO-разметкой.
-        ТОЧНАЯ КОПИЯ ЛОГИКИ ИЗ v1 extractor.py
-        
-        Args:
-            token_entities: список токенов с entity, score, start, end
-            original_text: оригинальный текст
-            
-        Returns:
-            List[Dict]: список сущностей
-        """
-        if not token_entities:
-            return []
-        
-        entities = []
-        i = 0
-        
-        while i < len(token_entities):
-            current = token_entities[i]
-            
-            # Пропускаем не-сущности
-            if current['entity'] == 'O':
-                i += 1
-                continue
-            
-            # Начало новой сущности (B- или первая)
-            if current['entity'].startswith('B-') or i == 0:
-                # Собираем все токены этой сущности
-                entity_tokens = [current]
-                j = i + 1
-                
-                while j < len(token_entities):
-                    next_token = token_entities[j]
-                    # Продолжение сущности (I- того же типа)
-                    if next_token['entity'].startswith('I-') and \
-                       self._get_entity_type(next_token['entity']) == self._get_entity_type(current['entity']):
-                        entity_tokens.append(next_token)
-                        j += 1
-                    else:
-                        break
-                
-                # Объединяем токены в сущность
-                merged = self._merge_token_entities(entity_tokens, original_text)
-                if merged:
-                    entities.append(merged)
-                
-                i = j
-            else:
-                i += 1
-        
-        return entities
-    
     def _get_entity_type(self, label: str) -> str:
         """Извлекает тип сущности из BIO-тега."""
         if label.startswith(('B-', 'I-')):
@@ -396,7 +363,6 @@ class GPUWorker(StoppableThread):
     def _merge_token_entities(self, token_entities: List[Dict], original_text: str) -> Optional[Dict]:
         """
         Объединяет токены одной сущности в целое слово с правильными пробелами.
-        ИСПРАВЛЕННАЯ ВЕРСИЯ: использует оригинальный текст для сохранения пробелов
         """
         if not token_entities:
             return None
@@ -408,23 +374,48 @@ class GPUWorker(StoppableThread):
         start_pos = sorted_tokens[0]['start']
         end_pos = sorted_tokens[-1]['end']
         
-        # Вырезаем текст из оригинала (это сохранит все оригинальные пробелы и дефисы)
+        # Вырезаем текст из оригинала
         full_text = original_text[start_pos:end_pos]
         
-        # Нормализуем пробелы (один пробел между словами, но сохраняем дефисы)
+        # Очищаем от лишних пробелов, но сохраняем внутренние
         full_text = ' '.join(full_text.split())
         
-        # Если текст получился подозрительно коротким, используем запасной вариант
-        if len(full_text) < 2:
+        # Если текст пустой или слишком короткий, пробуем склеить токены
+        if not full_text or len(full_text) < 2:
             # Запасной вариант: склейка токенов
             text_parts = []
+            last_end = None
+            
             for token in sorted_tokens:
+                # Убираем символ подчёркивания в начале токена
                 word = token['word'].replace('▁', '')
-                if text_parts and not word.startswith(("'", "-", ".", ",", ")", "(", ":", ";")):
-                    text_parts.append(' ')
+                
+                # Добавляем пробел, если это не первый токен и есть разрыв
+                if last_end is not None and token['start'] > last_end:
+                    if original_text[last_end:token['start']].strip():
+                        text_parts.append(' ')
+                
                 text_parts.append(word)
+                last_end = token['end']
+            
             full_text = ''.join(text_parts)
             full_text = ' '.join(full_text.split())
+        
+        # 🔍 Новая фильтрация: отбрасываем явный мусор
+        # 1. Слишком короткие (меньше 2 символов)
+        if len(full_text) < 2:
+            return None
+        
+        # 2. Состоит только из пунктуации или пробелов
+        if all(c in '.,!?;:-–—()[]{}«»""\'\' ' for c in full_text):
+            return None
+        
+        # 3. Начинается с пробела или пунктуации (кроме дефиса в начале слова)
+        if full_text and full_text[0] in '.,!?;:()[]{}«»""\'':
+            return None
+        
+        # 4. Содержит явные признаки мусора (цифры+буквы вперемешку без смысла)
+        # Но оставляем нормальные слова с цифрами (например, "1999 год")
         
         # Берём минимальный score
         confidence = min(t['score'] for t in sorted_tokens)
@@ -432,6 +423,10 @@ class GPUWorker(StoppableThread):
         # Определяем тип
         first_label = sorted_tokens[0]['entity']
         entity_type = self.ENTITY_GROUP_MAP.get(first_label, 'MISC')
+        
+        # 5. Если тип не LOC/PER/ORG - отбрасываем (если не нужны DATE и MISC)
+        if entity_type not in ['LOC', 'PER', 'ORG']:
+            return None
         
         result = {
             'text': full_text,
@@ -451,7 +446,7 @@ class GPUWorker(StoppableThread):
     def _extract_entities_from_tokens(self, token_entities: List[Dict], original_text: str) -> List[Dict]:
         """
         Извлекает сущности из списка токенов с BIO-разметкой.
-        ТОЧНАЯ КОПИЯ ЛОГИКИ ИЗ v1 extractor.py
+        ТОЧНАЯ КОПИЯ ИЗ v1 extractor.py
         """
         if not token_entities:
             return []
@@ -468,7 +463,7 @@ class GPUWorker(StoppableThread):
                 continue
             
             # Начало новой сущности (B-)
-            if current['entity'].startswith('B-'):
+            if current['entity'].startswith('B-') or i == 0:
                 # Собираем все токены этой сущности
                 entity_tokens = [current]
                 j = i + 1
@@ -477,7 +472,7 @@ class GPUWorker(StoppableThread):
                     next_token = token_entities[j]
                     # Продолжение сущности (I- того же типа)
                     if next_token['entity'].startswith('I-') and \
-                       self._get_entity_type(next_token['entity']) == self._get_entity_type(current['entity']):
+                    self._get_entity_type(next_token['entity']) == self._get_entity_type(current['entity']):
                         entity_tokens.append(next_token)
                         j += 1
                     else:
@@ -485,7 +480,7 @@ class GPUWorker(StoppableThread):
                 
                 # Объединяем токены в сущность
                 merged = self._merge_token_entities(entity_tokens, original_text)
-                if merged and len(merged['text']) >= 2:  # Игнорируем слишком короткие
+                if merged:
                     entities.append(merged)
                 
                 i = j
