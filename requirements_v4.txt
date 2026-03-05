@@ -1,0 +1,12 @@
+# Основные зависимости
+torch==2.10.0
+transformers==5.2.0
+pymysql>=1.0.0
+pyyaml>=6.0
+pandas
+tqdm
+# Для Parquet (опционально)
+pyarrow
+
+# Для профилирования (опционально)
+nvidia-ml-py3

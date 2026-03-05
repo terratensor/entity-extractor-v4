@@ -1,0 +1,48 @@
+source:
+  type: manticore
+  host: localhost
+  port: 9306
+  table: library2026
+  batch_size: 1000
+
+model:
+  name: Davlan/xlm-roberta-large-ner-hrl
+  max_tokens: 512
+  overlap_ratio: 0.0
+  min_confidence: 0.5
+  include_positions: false
+
+queues:
+  queue1_size: 1000
+  queue2_size: 20000
+  queue3_size: 5000
+
+tokenizer:
+  num_workers: 4
+  prefetch_size: 100
+
+gpu_devices:
+  - device_id: 0
+    batch_size: 32
+    precision: float16
+  - device_id: 1
+    batch_size: 24
+    precision: float16
+
+output:
+  format: csv
+  path: ./results_v4/output.csv
+  delimiter: "|"
+  include_confidence: true
+  include_positions: false
+  flush_interval: 60
+  buffer_size: 1000
+
+checkpoint:
+  file: ./batch_checkpoint_v4.json
+  save_interval: 1000
+
+logging:
+  level: INFO
+  file: ./batch_processor_v4.log
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
