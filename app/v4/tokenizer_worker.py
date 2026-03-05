@@ -152,6 +152,7 @@ class TokenizerWorker(StoppableThread):
                 - input_ids: список ID токенов
                 - attention_mask: маска внимания
                 - token_count: количество токенов в чанке
+                - text: исходный текст
         """
         doc_id = doc['id']
         text = doc['text']
@@ -189,7 +190,8 @@ class TokenizerWorker(StoppableThread):
                 'total_chunks': chunk_count,
                 'input_ids': input_ids,
                 'attention_mask': attention_mask,
-                'token_count': len(input_ids)
+                'token_count': len(input_ids),
+                'original_text': text  # добавляем оригинальный текст для точного извлечения
             })
             
             # Обновляем статистику
