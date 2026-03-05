@@ -1,0 +1,56 @@
+hf_cache
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Docker
+*.pid
+docker-compose.override.yml
+
+# Logs
+logs/
+*.log
+
+batch_results/
+batch_results_v2/
+batch_results_v3/
+batch_checkpoint.json
+batch_checkpoint_v3.json
+pipeline_checkpoint.json
+production_results
+tests_results
+results
+results_test
+checkpoint_test.json

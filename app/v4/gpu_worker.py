@@ -235,10 +235,10 @@ class GPUWorker(StoppableThread):
             padded_attention_mask.append(mask + [0] * pad_len)
         
         # Преобразуем в тензоры на GPU
-        input_ids = torch.tensor(padded_input_ids, device=self.device)
-        attention_mask = torch.tensor(padded_attention_mask, device=self.device)
+        input_ids = torch.tensor(padded_input_ids, device=self.device, dtype=torch.long)
+        attention_mask = torch.tensor(padded_attention_mask, device=self.device, dtype=torch.long)
         
-        # Инференс
+        # Инференс (модель сама приведёт эмбеддинги к своему типу)
         with torch.no_grad():
             outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
         
@@ -254,7 +254,7 @@ class GPUWorker(StoppableThread):
             chunk_len = len(chunk['input_ids'])
             chunk_preds = predictions[i, :chunk_len].cpu().tolist()
             
-            # Извлекаем сущности (используем проверенную функцию из прототипа)
+            # Извлекаем сущности
             entities = self._extract_entities_from_chunk(
                 chunk=chunk,
                 predictions=chunk_preds,
