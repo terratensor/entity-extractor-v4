@@ -163,14 +163,15 @@ class TokenizerWorker(StoppableThread):
         if self.config.overlap_ratio > 0:
             stride = int(self.config.max_tokens * self.config.overlap_ratio)
         
+        # ВАЖНО: добавляем return_offsets_mapping=True
         inputs = self.tokenizer(
             text,
             return_overflowing_tokens=True,
+            return_offsets_mapping=True,  # <-- ЭТО НОВОЕ
             max_length=self.config.max_tokens,
             stride=stride,
             truncation=True,
-            return_offsets_mapping=False,  # позиции не нужны для GPU
-            return_tensors=None  # возвращаем списки, не тензоры
+            return_tensors=None
         )
         
         chunks = []
@@ -184,14 +185,39 @@ class TokenizerWorker(StoppableThread):
             input_ids = inputs['input_ids'][i]
             attention_mask = inputs['attention_mask'][i]
             
+            # === НОВЫЙ КОД: получаем текст ТОЛЬКО для этого чанка ===
+            offsets = inputs['offset_mapping'][i]
+            
+            # Находим реальные границы в тексте
+            if offsets and len(offsets) > 0:
+                # Пропускаем специальные токены в начале и конце
+                start_pos = None
+                end_pos = None
+                
+                for offset in offsets:
+                    if offset and offset[0] != 0 and offset[1] != 0:
+                        if start_pos is None:
+                            start_pos = offset[0]
+                        end_pos = offset[1]
+                
+                if start_pos is not None and end_pos is not None:
+                    chunk_text = text[start_pos:end_pos]
+                else:
+                    # Запасной вариант: декодируем токены
+                    chunk_text = self.tokenizer.decode(input_ids, skip_special_tokens=True)
+            else:
+                # Запасной вариант: декодируем токены
+                chunk_text = self.tokenizer.decode(input_ids, skip_special_tokens=True)
+            # === КОНЕЦ НОВОГО КОДА ===
+            
             chunks.append({
                 'id': doc_id,
                 'chunk_id': i,
                 'total_chunks': chunk_count,
                 'input_ids': input_ids,
                 'attention_mask': attention_mask,
-                'token_count': len(input_ids),
-                'original_text': text  # добавляем оригинальный текст для точного извлечения
+                'text': chunk_text,  # <-- ТЕПЕРЬ ЗДЕСЬ ТОЛЬКО ТЕКСТ ЧАНКА
+                'token_count': len(input_ids)
             })
             
             # Обновляем статистику

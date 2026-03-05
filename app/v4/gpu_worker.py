@@ -214,11 +214,10 @@ class GPUWorker(StoppableThread):
         
         batch_start = time.time()
         
-        # Подготовка текстов
-        texts = [chunk['original_text'] for chunk in batch]
+        # --- ИЗМЕНЕНИЕ 1: вместо original_text используем text ---
+        texts = [chunk['text'] for chunk in batch]  # <-- было chunk['original_text']
         
         # Используем пайплайн с aggregation_strategy=None (как в v1)
-        # Создаем пайплайн для каждого GPU отдельно
         if not hasattr(self, 'ner_pipeline'):
             from transformers import pipeline
             self.ner_pipeline = pipeline(
@@ -226,7 +225,7 @@ class GPUWorker(StoppableThread):
                 model=self.model,
                 tokenizer=self.tokenizer,
                 device=self.device,
-                aggregation_strategy=None  # КЛЮЧЕВОЙ МОМЕНТ!
+                aggregation_strategy=None
             )
         
         # Получаем сырые предсказания для всех текстов в батче
@@ -239,14 +238,13 @@ class GPUWorker(StoppableThread):
         results = []
         
         for i, chunk in enumerate(batch):
-            # Получаем предсказания для этого чанка
             token_entities = batch_results[i] if i < len(batch_results) else []
             
             # Фильтруем по confidence
             token_entities = [t for t in token_entities if t['score'] >= self.min_confidence]
             
-            # ИЗВЛЕКАЕМ СУЩНОСТИ ИСПОЛЬЗУЯ ПРОВЕРЕННУЮ ФУНКЦИЮ ИЗ v1
-            entities = self._extract_entities_v1(token_entities, chunk['original_text'])
+            # --- ИЗМЕНЕНИЕ 2: передаем текст чанка ---
+            entities = self._extract_entities_v1(token_entities, chunk['text'])  # <-- было chunk['original_text']
             
             # Формируем результат
             result = {
