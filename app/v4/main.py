@@ -45,11 +45,12 @@ class PipelineV4:
     Запускает все воркеры и управляет их жизненным циклом.
     """
     
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, limit: Optional[int] = None):
         """
         Args:
             config_path: путь к конфигурационному файлу
         """
+        self.limit = limit
         self.config_path = config_path
         self.config: Config = load_config(config_path)
         
@@ -201,7 +202,15 @@ class PipelineV4:
         
         try:
             while not self.shutdown.is_set():
-                time.sleep(5)  # Проверяем каждые 5 секунд
+                time.sleep(5)
+                
+                # Проверка лимита - берём из writer.stats['completed_docs']
+                if self.limit and self.writer:
+                    completed = self.writer.stats.get('completed_docs', 0)
+                    if completed >= self.limit:
+                        logger.info(f"✅ Достигнут лимит в {self.limit} документов (завершено: {completed}), останавливаемся")
+                        self.shutdown.stop()
+                        break
                 
                 # Проверяем, живы ли воркеры
                 if not self.reader.is_alive():
@@ -219,7 +228,7 @@ class PipelineV4:
         except KeyboardInterrupt:
             logger.warning("\n⚠️ Получен Ctrl+C, останавливаем...")
             self.shutdown.stop()
-    
+            
     def _print_stats(self) -> None:
         """Выводит текущую статистику."""
         elapsed = time.time() - self.start_time
@@ -336,7 +345,7 @@ def main():
         logger.error(f"❌ Конфигурационный файл не найден: {args.config}")
         sys.exit(1)
     
-    pipeline = PipelineV4(args.config)
+    pipeline = PipelineV4(args.config, limit=args.limit)
     
     # Если не resume, сбрасываем чекпоинт
     if not args.resume and os.path.exists(pipeline.config.checkpoint.file):

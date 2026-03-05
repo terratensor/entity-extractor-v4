@@ -2,7 +2,7 @@ source:
   host: localhost
   port: 9306
   table: library2026
-  batch_size: 100
+  batch_size: 1000
 
 model:
   name: Davlan/xlm-roberta-large-ner-hrl
@@ -12,19 +12,20 @@ model:
   include_positions: false
 
 queues:
-  queue1_size: 100
+  queue1_size: 10000
   queue2_size: 1000
-  queue3_size: 500
+  queue3_size: 2000
 
 tokenizer:
-  num_workers: 2
+  num_workers: 8
+  prefetch_size: 200
 
 gpu_devices:
   - device_id: 0
     batch_size: 8
     precision: float16
   - device_id: 1
-    batch_size: 6
+    batch_size: 4
     precision: float16
 
 output:
@@ -34,11 +35,11 @@ output:
   include_confidence: true
   include_positions: false
   flush_interval: 10
-  buffer_size: 100
+  buffer_size: 1000
 
 checkpoint:
   file: ./checkpoint_test.json
-  save_interval: 100
+  save_interval: 500
 
 logging:
   level: INFO

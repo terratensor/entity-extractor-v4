@@ -3,7 +3,7 @@ source:
   host: localhost
   port: 9306
   table: library2026
-  batch_size: 1000
+  batch_size: 10000
 
 model:
   name: Davlan/xlm-roberta-large-ner-hrl
@@ -13,7 +13,7 @@ model:
   include_positions: false
 
 queues:
-  queue1_size: 1000
+  queue1_size: 10000
   queue2_size: 20000
   queue3_size: 5000
 
@@ -23,10 +23,10 @@ tokenizer:
 
 gpu_devices:
   - device_id: 0
-    batch_size: 32
+    batch_size: 16
     precision: float16
   - device_id: 1
-    batch_size: 24
+    batch_size: 12
     precision: float16
 
 output:
