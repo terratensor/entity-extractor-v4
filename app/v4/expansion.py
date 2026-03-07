@@ -181,8 +181,10 @@ class WordExpander:
         
         Правила:
         1. Удалить знаки препинания в начале и конце (.,!?;:)
-        2. Для кавычек: если только открывающая или только закрывающая - удалить
-        3. Если есть и открывающая и закрывающая - оставить обе
+        2. Удалить дефисы в начале и конце
+        3. Удалить пробелы в начале и конце (trim)
+        4. Для кавычек: если только открывающая или только закрывающая - удалить
+        5. Если есть и открывающая и закрывающая - оставить обе
         """
         if not text:
             return text
@@ -207,9 +209,29 @@ class WordExpander:
             original = text
         
         # ----------------------------------------------------------------------
-        # Правило 3: Проверяем парность кавычек
+        # Правило 3: Удаляем дефисы в начале и конце
         # ----------------------------------------------------------------------
-        # Проверяем первый символ
+        text = text.lstrip('-')
+        if text != original:
+            logger.warning(f"         удалены дефисы в начале: '{original}' -> '{text}'")
+            original = text
+        
+        text = text.rstrip('-')
+        if text != original:
+            logger.warning(f"         удалены дефисы в конце: '{original}' -> '{text}'")
+            original = text
+        
+        # ----------------------------------------------------------------------
+        # Правило 4: Удаляем пробелы в начале и конце (trim)
+        # ----------------------------------------------------------------------
+        text = text.strip()
+        if text != original:
+            logger.warning(f"         удалены пробелы: '{original}' -> '{text}'")
+            original = text
+        
+        # ----------------------------------------------------------------------
+        # Правило 5: Проверяем парность кавычек
+        # ----------------------------------------------------------------------
         has_open = False
         has_close = False
         open_char = None
@@ -238,11 +260,11 @@ class WordExpander:
             original = text
         
         # ----------------------------------------------------------------------
-        # Правило 4: Дополнительная проверка - нет ли точки в начале после всех чисток
+        # Правило 6: Финальный trim на всякий случай
         # ----------------------------------------------------------------------
-        if text and text[0] in self.PUNCTUATION_START:
-            text = text.lstrip(self.PUNCTUATION_START)
-            logger.warning(f"         повторная очистка начала: '{original}' -> '{text}'")
+        text = text.strip()
+        if text != original:
+            logger.warning(f"         финальный trim: '{original}' -> '{text}'")
         
         return text
     
@@ -279,19 +301,23 @@ class WordExpander:
         # ----------------------------------------------------------------------
         can_expand_left = False
         left_reason = None
-        
+
         if start_pos > 0:
             prev_char = original_text[start_pos - 1]
             logger.warning(f"      символ слева: '{prev_char}' (код {ord(prev_char)})")
             
             # Условие 3.1: Слева буква или кавычка (не разделитель)
             if prev_char.isalpha() or prev_char in self.ALL_QUOTES:
-                # Условие 3.2: Это начало слова (перед ним разделитель или начало текста)
-                if start_pos - 1 == 0 or original_text[start_pos - 2] in self.WORD_BREAKS:
+                # Условие 3.2: Для букв - всегда разрешаем (часть слова)
+                if prev_char.isalpha():
                     can_expand_left = True
-                    logger.warning(f"      ✅ можно расширять ВЛЕВО")
+                    logger.warning(f"      ✅ можно расширять ВЛЕВО (часть слова)")
+                # Для кавычек - только если это начало слова
+                elif start_pos - 1 == 0 or original_text[start_pos - 2] in self.WORD_BREAKS:
+                    can_expand_left = True
+                    logger.warning(f"      ✅ можно расширять ВЛЕВО (начало слова с кавычкой)")
                 else:
-                    left_reason = "не начало слова"
+                    left_reason = "кавычка не в начале слова"
             else:
                 left_reason = "не буква и не кавычка"
         else:
