@@ -455,6 +455,19 @@ class WordExpander:
         # ----------------------------------------------------------------------
         full_word = original_text[word_start:word_end]
         
+        # ----------------------------------------------------------------------
+        # НОВАЯ ПРОВЕРКА: нет ли разделителей ВНУТРИ расширенного слова
+        # ----------------------------------------------------------------------
+        if left_expanded or right_expanded:
+            logger.warning(f"      проверка наличия разделителей внутри:")
+            # Проверяем диапазон между исходным и расширенным
+            # Но разрешаем дефисы и кавычки
+            for pos in range(start_pos, end_pos):
+                char = original_text[pos]
+                if char in self.WORD_BREAKS and char not in self.ALL_QUOTES and char != '-':
+                    logger.warning(f"         найден разделитель '{char}' на позиции {pos} - отмена расширения")
+                    return text, 'none'
+        
         # Определяем тип расширения
         if left_expanded and right_expanded:
             expand_type = 'both'
@@ -477,9 +490,7 @@ class WordExpander:
             logger.warning(f"      ❌ слишком длинное: {len(full_word)} > {len(text)} * {self.config['max_length_ratio']}")
             return text, 'none'
         
-        # ----------------------------------------------------------------------
-        # ПРОВЕРКА 2: для расширенных слов доверяем оригинальному тексту
-        # ----------------------------------------------------------------------
+        # Проверка 2: для расширенных слов доверяем оригинальному тексту
         if left_expanded or right_expanded:
             # Мы расширили слово, используя оригинальный текст
             # Доверяем оригиналу, даже если оно не содержит исходный текст модели
@@ -490,17 +501,13 @@ class WordExpander:
                 logger.warning(f"      ❌ исходный текст не подстрока (без расширения)")
                 return text, 'none'
         
-        # ----------------------------------------------------------------------
-        # ПРОВЕРКА 3: минимальное покрытие
-        # ----------------------------------------------------------------------
+        # Проверка 3: минимальное покрытие
         coverage = len(text) / len(full_word) if len(full_word) > 0 else 0
         if coverage < self.config['min_coverage']:
             logger.warning(f"      ❌ покрытие {coverage:.2f} < {self.config['min_coverage']}")
             return text, 'none'
         
-        # ----------------------------------------------------------------------
-        # ПРОВЕРКА 4: заглавные буквы для LOC/PER (пропуская кавычки)
-        # ----------------------------------------------------------------------
+        # Проверка 4: заглавные буквы для LOC/PER
         if (self.config['require_capital'] and entity_type in ['LOC', 'PER'] and left_expanded):
             # Ищем первую букву (пропуская кавычки)
             first_letter = None
@@ -516,12 +523,8 @@ class WordExpander:
             if not first_letter.isupper():
                 logger.warning(f"      ❌ первая буква '{first_letter}' не заглавная")
                 return text, 'none'
-            else:
-                logger.warning(f"      ✅ первая буква '{first_letter}' заглавная")
         
-        # ----------------------------------------------------------------------
-        # ПРОВЕРКА 5: проверка на слияние
-        # ----------------------------------------------------------------------
+        # Проверка 5: проверка на слияние
         if self.config['enable_merge_check']:
             if self._check_word_merge(original_text, full_word, start_pos, end_pos):
                 logger.warning(f"      ❌ обнаружено слияние слов")
