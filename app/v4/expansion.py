@@ -55,7 +55,10 @@ class WordExpander:
     VOWELS = set('аеёиоуыэюя')
     
     # Разделители слов
-    WORD_BREAKS = set(' .,!?;:()[]{}«»""\'\n\r\t')
+    WORD_BREAKS = set(' .,!?;:()[]{}""\'\n\r\t')  # убрали « и » из разделителей
+
+    # Отдельно определим парные кавычки
+    QUOTE_MARKS = {'«', '»', '"', "'", '“', '”', '„', '‟'}
     
     def __init__(self, config: Optional[Dict] = None):
         """
@@ -93,9 +96,10 @@ class WordExpander:
             
         Returns:
             Dict: сущность с возможным расширенным текстом
-        """
-        # Расширяем только LOC и PER
-        if entity['type'] not in ['LOC', 'PER']:
+        """        
+        # Используем список из конфига
+        expand_types = self.config.get('expand_entity_types', ['LOC', 'PER'])
+        if entity['type'] not in expand_types:
             return entity
         
         # Нужны позиции для расширения
@@ -153,106 +157,158 @@ class WordExpander:
         return entity
     
     def _should_expand(self, text: str, start_pos: int, end_pos: int,
-                      original_text: str, entity_type: str) -> tuple:
+                    original_text: str, entity_type: str) -> tuple:
         """
-        Проверяет, нужно ли расширять сущность.
+        Проверяет, нужно ли расширять сущность (в обе стороны).
+        Каждая проверка отдельно и четко прокомментирована.
         
         Returns:
             (bool, str): (нужно ли расширять, причина отказа)
         """
         logger.warning(f"   _should_expand проверка для '{text}':")
-
-        # [ПАРАМЕТР] Проверка 1: минимальная длина
+        logger.warning(f"      start_pos={start_pos}, end_pos={end_pos}")
+        
+        # ----------------------------------------------------------------------
+        # ПРОВЕРКА 1: Минимальная длина
+        # ----------------------------------------------------------------------
         if len(text) < self.config['min_token_length']:
             logger.warning(f"      ❌ rejected_length: длина {len(text)} < {self.config['min_token_length']}")
             return False, 'length'
         
-        # [ПАРАМЕТР] Проверка 2: стоп-слова
+        # ----------------------------------------------------------------------
+        # ПРОВЕРКА 2: Стоп-слова (предлоги, союзы, частицы)
+        # ----------------------------------------------------------------------
         if self.config['enable_stopwords']:
             clean_text = text.lower().strip('▁')
             if clean_text in self.STOP_WORDS:
                 logger.warning(f"      ❌ rejected_stopword: '{clean_text}' в стоп-словах")
                 return False, 'stopword'
         
-        # Проверка 3: если после end_pos сразу пробел - слово полное
-        if end_pos >= len(original_text):
-            logger.warning(f"      ❌ конец текста")
+        # ----------------------------------------------------------------------
+        # ПРОВЕРКА 3: Возможность расширения ВЛЕВО
+        # ----------------------------------------------------------------------
+        can_expand_left = False
+        left_reason = None
+        
+        if start_pos > 0:
+            prev_char = original_text[start_pos - 1]
+            logger.warning(f"      символ слева: '{prev_char}' (код {ord(prev_char)})")
+            
+            # Условие 3.1: Слева буква или кавычка (не разделитель)
+            if prev_char.isalpha() or prev_char in self.QUOTE_MARKS:
+                # Условие 3.2: Это начало слова (перед ним разделитель или начало текста)
+                if start_pos - 1 == 0 or original_text[start_pos - 2] in self.WORD_BREAKS:
+                    can_expand_left = True
+                    logger.warning(f"      ✅ можно расширять ВЛЕВО")
+                else:
+                    left_reason = "не начало слова"
+            else:
+                left_reason = "не буква и не кавычка"
+        else:
+            left_reason = "начало текста"
+        
+        # ----------------------------------------------------------------------
+        # ПРОВЕРКА 4: Возможность расширения ВПРАВО
+        # ----------------------------------------------------------------------
+        can_expand_right = False
+        right_reason = None
+        
+        if end_pos < len(original_text):
+            next_char = original_text[end_pos]
+            logger.warning(f"      символ справа: '{next_char}' (код {ord(next_char)})")
+            
+            # Условие 4.1: Справа буква или кавычка (не разделитель)
+            if next_char.isalpha() or next_char in self.QUOTE_MARKS:
+                can_expand_right = True
+                logger.warning(f"      ✅ можно расширять ВПРАВО")
+            else:
+                right_reason = "не буква и не кавычка"
+        else:
+            right_reason = "конец текста"
+        
+        # ----------------------------------------------------------------------
+        # ПРОВЕРКА 5: Для LOC/PER проверяем заглавные буквы (только для правого расширения)
+        # ----------------------------------------------------------------------
+        if (self.config['require_capital'] and entity_type in ['LOC', 'PER'] and 
+            can_expand_right and end_pos < len(original_text)):
+            next_char = original_text[end_pos]
+            if next_char.isalpha() and not next_char.isupper():
+                # Если следующая буква строчная - это нормально (продолжение слова)
+                # Но если это начало нового слова - должна быть заглавной
+                if end_pos > 0 and original_text[end_pos - 1] in self.WORD_BREAKS:
+                    logger.warning(f"      ❌ rejected_capital: следующая буква '{next_char}' не заглавная")
+                    return False, 'capital'
+        
+        # ----------------------------------------------------------------------
+        # ИТОГ: расширяем, если есть возможность хотя бы в одну сторону
+        # ----------------------------------------------------------------------
+        if can_expand_left or can_expand_right:
+            logger.warning(f"      ✅ можно расширять (влево={can_expand_left}, вправо={can_expand_right})")
+            return True, None
+        else:
+            logger.warning(f"      ❌ нет расширения: влево={left_reason}, вправо={right_reason}")
             return False, None
         
-        next_char = original_text[end_pos]
-        logger.warning(f"      следующий символ: '{next_char}' (код {ord(next_char)})")
-
-        if next_char in self.WORD_BREAKS:
-            logger.warning(f"      ❌ следующий символ - разделитель")
-            return False, None
-        
-        # Проверка 4: следующий символ должен быть буквой
-        if not next_char.isalpha():
-            logger.warning(f"      ❌ следующий символ не буква")
-            return False, None
-        
-        # [ПАРАМЕТР] Проверка 5: следующая буква должна быть строчной
-        # (новые имена обычно с заглавной)
-        if self.config['require_capital'] and entity_type in ['LOC', 'PER']:
-            if not next_char.islower():
-                logger.warning(f"      ❌ rejected_capital: следующая буква '{next_char}' не строчная")
-                return False, 'capital'
-        
-        logger.warning(f"      ✅ можно расширять")
-        return True, None
-    
     def _expand_to_full_word(self, text: str, start_pos: int, end_pos: int,
                             original_text: str, entity_type: str) -> tuple:
         """
         Расширяет до полного слова в ОБЕ стороны.
+        Левое и правое расширение работают независимо.
         """
         logger.warning(f"      🔧 _expand_to_full_word для '{text}' ({start_pos}-{end_pos})")
         
-        # [ПАРАМЕТР] Максимальное расстояние поиска
         max_left = self.config['max_search_left']
         max_right = self.config['max_search_right']
         
-        # 1. Ищем начало слова (влево)
+        # ----------------------------------------------------------------------
+        # РАСШИРЕНИЕ ВЛЕВО
+        # ----------------------------------------------------------------------
         word_start = start_pos
         left_expanded = False
         steps_left = 0
         
-        logger.warning(f"      поиск влево от {start_pos}:")
-        while word_start > 0 and steps_left < max_left:
-            prev_char = original_text[word_start - 1]
-            logger.warning(f"        символ {word_start-1}: '{prev_char}'")
-            if prev_char in self.WORD_BREAKS:
-                logger.warning(f"          стоп - разделитель")
-                break
-            if not prev_char.isalpha():
-                logger.warning(f"          стоп - не буква")
-                break
-            word_start -= 1
-            steps_left += 1
-            left_expanded = True
-            logger.warning(f"          добавлен влево, теперь начало {word_start}")
+        if start_pos > 0:
+            logger.warning(f"      поиск влево от {start_pos}:")
+            while word_start > 0 and steps_left < max_left:
+                prev_char = original_text[word_start - 1]
+                logger.warning(f"        символ {word_start-1}: '{prev_char}'")
+                
+                # Останавливаемся на разделителях (но пропускаем кавычки)
+                if prev_char in self.WORD_BREAKS and prev_char not in self.QUOTE_MARKS:
+                    logger.warning(f"          стоп - разделитель")
+                    break
+                
+                word_start -= 1
+                steps_left += 1
+                left_expanded = True
+                logger.warning(f"          добавлен влево, теперь начало {word_start}")
         
-        # 2. Ищем конец слова (вправо)
+        # ----------------------------------------------------------------------
+        # РАСШИРЕНИЕ ВПРАВО
+        # ----------------------------------------------------------------------
         word_end = end_pos
         right_expanded = False
         steps_right = 0
         
-        logger.warning(f"      поиск вправо от {end_pos}:")
-        while word_end < len(original_text) and steps_right < max_right:
-            next_char = original_text[word_end]
-            logger.warning(f"        символ {word_end}: '{next_char}'")
-            if next_char in self.WORD_BREAKS:
-                logger.warning(f"          стоп - разделитель")
-                break
-            if not next_char.isalpha():
-                logger.warning(f"          стоп - не буква")
-                break
-            word_end += 1
-            steps_right += 1
-            right_expanded = True
-            logger.warning(f"          добавлен вправо, теперь конец {word_end}")
+        if end_pos < len(original_text):
+            logger.warning(f"      поиск вправо от {end_pos}:")
+            while word_end < len(original_text) and steps_right < max_right:
+                next_char = original_text[word_end]
+                logger.warning(f"        символ {word_end}: '{next_char}'")
+                
+                # Останавливаемся на разделителях (но пропускаем кавычки)
+                if next_char in self.WORD_BREAKS and next_char not in self.QUOTE_MARKS:
+                    logger.warning(f"          стоп - разделитель")
+                    break
+                
+                word_end += 1
+                steps_right += 1
+                right_expanded = True
+                logger.warning(f"          добавлен вправо, теперь конец {word_end}")
         
-        # Полное слово из оригинала
+        # ----------------------------------------------------------------------
+        # ФОРМИРОВАНИЕ РЕЗУЛЬТАТА
+        # ----------------------------------------------------------------------
         full_word = original_text[word_start:word_end]
         
         # Определяем тип расширения
@@ -268,35 +324,31 @@ class WordExpander:
         logger.warning(f"      полное слово: '{full_word}'")
         logger.warning(f"      тип расширения: {expand_type}")
         
-        # [ПАРАМЕТР] Проверка на слишком длинное расширение
+        # ----------------------------------------------------------------------
+        # ПРОВЕРКИ РЕЗУЛЬТАТА
+        # ----------------------------------------------------------------------
+        
+        # Проверка 1: слишком длинное расширение
         if len(full_word) > len(text) * self.config['max_length_ratio']:
             logger.warning(f"      ❌ слишком длинное: {len(full_word)} > {len(text)} * {self.config['max_length_ratio']}")
             return text, 'none'
         
-        # Проверка: исходный текст должен быть подстрокой полного слова
+        # Проверка 2: исходный текст должен быть подстрокой
         if text not in full_word:
             logger.warning(f"      ❌ исходный текст '{text}' не подстрока '{full_word}'")
             return text, 'none'
         
-        # [ПАРАМЕТР] Проверка на минимальное покрытие
+        # Проверка 3: минимальное покрытие
         coverage = len(text) / len(full_word) if len(full_word) > 0 else 0
         if coverage < self.config['min_coverage']:
             logger.warning(f"      ❌ покрытие {coverage:.2f} < {self.config['min_coverage']}")
             return text, 'none'
         
-        # [ПАРАМЕТР] Проверка на заглавные для LOC/PER
-        if self.config['require_capital'] and entity_type in ['LOC', 'PER']:
-            # Первая буква полного слова должна быть заглавной
-            words = full_word.split()
-            for w in words:
-                if w and w[0].isalpha() and not w[0].isupper():
-                    logger.warning(f"      ❌ слово '{w}' начинается с маленькой буквы")
-                    return text, 'none'
-        
-        # [ПАРАМЕТР] Проверка на слияние
-        if self.config['enable_merge_check']:
-            if self._check_word_merge(original_text, full_word, start_pos, end_pos):
-                logger.warning(f"      ❌ обнаружено слияние слов")
+        # Проверка 4: заглавные буквы для LOC/PER (только для левого расширения)
+        if (self.config['require_capital'] and entity_type in ['LOC', 'PER'] and left_expanded):
+            first_letter = full_word[0]
+            if not first_letter.isupper():
+                logger.warning(f"      ❌ первая буква '{first_letter}' не заглавная")
                 return text, 'none'
         
         logger.warning(f"      ✅ расширение: '{text}' -> '{full_word}'")
