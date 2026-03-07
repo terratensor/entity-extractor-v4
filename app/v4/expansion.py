@@ -205,10 +205,9 @@ class WordExpander:
                             original_text: str, entity_type: str) -> tuple:
         """
         Расширяет до полного слова в ОБЕ стороны.
-        
-        Returns:
-            (str, str): (расширенное слово, тип расширения: 'left'/'right'/'both'/'none')
         """
+        logger.warning(f"      🔧 _expand_to_full_word для '{text}' ({start_pos}-{end_pos})")
+        
         # [ПАРАМЕТР] Максимальное расстояние поиска
         max_left = self.config['max_search_left']
         max_right = self.config['max_search_right']
@@ -218,26 +217,40 @@ class WordExpander:
         left_expanded = False
         steps_left = 0
         
+        logger.warning(f"      поиск влево от {start_pos}:")
         while word_start > 0 and steps_left < max_left:
             prev_char = original_text[word_start - 1]
+            logger.warning(f"        символ {word_start-1}: '{prev_char}'")
             if prev_char in self.WORD_BREAKS:
+                logger.warning(f"          стоп - разделитель")
+                break
+            if not prev_char.isalpha():
+                logger.warning(f"          стоп - не буква")
                 break
             word_start -= 1
             steps_left += 1
             left_expanded = True
+            logger.warning(f"          добавлен влево, теперь начало {word_start}")
         
         # 2. Ищем конец слова (вправо)
         word_end = end_pos
         right_expanded = False
         steps_right = 0
         
+        logger.warning(f"      поиск вправо от {end_pos}:")
         while word_end < len(original_text) and steps_right < max_right:
             next_char = original_text[word_end]
+            logger.warning(f"        символ {word_end}: '{next_char}'")
             if next_char in self.WORD_BREAKS:
+                logger.warning(f"          стоп - разделитель")
+                break
+            if not next_char.isalpha():
+                logger.warning(f"          стоп - не буква")
                 break
             word_end += 1
             steps_right += 1
             right_expanded = True
+            logger.warning(f"          добавлен вправо, теперь конец {word_end}")
         
         # Полное слово из оригинала
         full_word = original_text[word_start:word_end]
@@ -252,18 +265,23 @@ class WordExpander:
         else:
             expand_type = 'none'
         
+        logger.warning(f"      полное слово: '{full_word}'")
+        logger.warning(f"      тип расширения: {expand_type}")
+        
         # [ПАРАМЕТР] Проверка на слишком длинное расширение
         if len(full_word) > len(text) * self.config['max_length_ratio']:
+            logger.warning(f"      ❌ слишком длинное: {len(full_word)} > {len(text)} * {self.config['max_length_ratio']}")
             return text, 'none'
         
         # Проверка: исходный текст должен быть подстрокой полного слова
         if text not in full_word:
+            logger.warning(f"      ❌ исходный текст '{text}' не подстрока '{full_word}'")
             return text, 'none'
         
         # [ПАРАМЕТР] Проверка на минимальное покрытие
         coverage = len(text) / len(full_word) if len(full_word) > 0 else 0
         if coverage < self.config['min_coverage']:
-            self.stats['rejected_coverage'] += 1
+            logger.warning(f"      ❌ покрытие {coverage:.2f} < {self.config['min_coverage']}")
             return text, 'none'
         
         # [ПАРАМЕТР] Проверка на заглавные для LOC/PER
@@ -272,27 +290,27 @@ class WordExpander:
             words = full_word.split()
             for w in words:
                 if w and w[0].isalpha() and not w[0].isupper():
-                    self.stats['rejected_capital'] += 1
+                    logger.warning(f"      ❌ слово '{w}' начинается с маленькой буквы")
                     return text, 'none'
         
         # [ПАРАМЕТР] Проверка на слияние
         if self.config['enable_merge_check']:
             if self._check_word_merge(original_text, full_word, start_pos, end_pos):
-                self.stats['rejected_merge'] += 1
+                logger.warning(f"      ❌ обнаружено слияние слов")
                 return text, 'none'
         
+        logger.warning(f"      ✅ расширение: '{text}' -> '{full_word}'")
         return full_word, expand_type
     
     def _check_word_merge(self, original_text: str, full_word: str,
-                         start_pos: int, end_pos: int) -> bool:
+                        start_pos: int, end_pos: int) -> bool:
         """
         Проверяет, не является ли расширение результатом слияния слов.
         """
         # Если внутри полного слова есть пробелы - это несколько слов
         if ' ' in full_word and '-' not in full_word:
-            # Проверяем, что исходный кусок покрывает значительную часть
             original_part = original_text[start_pos:end_pos]
-            if len(original_part) < len(full_word) * 0.3:  # меньше 30%
+            if len(original_part) < len(full_word) * 0.3:
                 return True
         
         # Проверка на типичные паттерны слияния
@@ -300,10 +318,38 @@ class WordExpander:
             next_char = original_text[end_pos]
             last_char = original_text[end_pos - 1] if end_pos > 0 else ''
             
-            # Согласная + гласная на стыке (признак слияния)
+            # Признаки возможного слияния: согласная + гласная на стыке
             if (last_char.isalpha() and next_char.isalpha() and
                 last_char.lower() not in self.VOWELS and
                 next_char.lower() in self.VOWELS):
+                
+                # ДОПОЛНИТЕЛЬНЫЕ ПРОВЕРКИ:
+                
+                # 1. Проверяем, что после гласной есть буквы (это часть слова, а не окончание)
+                if end_pos + 1 < len(original_text):
+                    next_next = original_text[end_pos + 1]
+                    if next_next.isalpha():
+                        # Если после гласной еще буквы - это часть слова, а не окончание
+                        # Значит, это НЕ слияние
+                        return False
+                
+                # 2. Проверяем, не является ли это типичным окончанием
+                # Типичные окончания в русском языке: а, я, ы, и, е, ё, ю, й
+                common_endings = {'а', 'я', 'ы', 'и', 'е', 'ё', 'ю', 'й'}
+                if next_char.lower() in common_endings:
+                    # Проверяем, что после окончания идет пробел
+                    if end_pos + 1 >= len(original_text) or original_text[end_pos + 1] in self.WORD_BREAKS:
+                        # Это нормальное окончание, а не слияние
+                        return False
+                
+                # 3. Проверяем длину исходного слова
+                # Если исходное слово очень короткое (1-2 буквы), это может быть предлог
+                if len(full_word) < 3:
+                    # Проверяем по стоп-словам
+                    if full_word.lower() in self.STOP_WORDS:
+                        return True  # это предлог - возможно слияние
+                
+                # Если все проверки пройдены - это подозрительно
                 return True
         
         return False

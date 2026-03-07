@@ -48,7 +48,7 @@ output:
     max_search_right: 30
     
     # Минимальная доля исходного текста в расширенном (0.3 = 30%)
-    min_coverage: 0.3
+    min_coverage: 0.5
     
     # Требовать заглавную букву для LOC/PER
     require_capital: true
@@ -60,7 +60,9 @@ output:
     enable_merge_check: true
     
     # Максимальное соотношение длин (расширенное / исходное)
-    max_length_ratio: 3.0
+    max_length_ratio: 5.0
+    # Добавим список типичных окончаний (можно вынести в конфиг - зашито в коде)
+    common_endings: ['а', 'я', 'ы', 'и', 'е', 'ё', 'ю', 'й']
 
 checkpoint:
   file: ./checkpoint_test.json
