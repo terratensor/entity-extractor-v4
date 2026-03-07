@@ -32,18 +32,35 @@ output:
   format: csv
   path: ./results_test/output.csv
   delimiter: "|"
-  include_confidence: true
-  include_positions: false
-  flush_interval: 10
-  buffer_size: 1000
+  include_confidence: true    
   include_positions: true  # ВАЖНО для расширения
+  flush_interval: 30
+  buffer_size: 1000
 
-  # [ЭКСПЕРИМЕНТАЛЬНЫЕ ПАРАМЕТРЫ]
+  # [ЭКСПЕРИМЕНТАЛЬНЫЕ ПАРАМЕТРЫ] Расширение слов
   enable_expansion: true
   expansion_params:
+    # Минимальная длина токена для расширения
     min_token_length: 2
+    
+    # Максимальное расстояние поиска влево/вправо
+    max_search_left: 30
+    max_search_right: 30
+    
+    # Минимальная доля исходного текста в расширенном (0.3 = 30%)
+    min_coverage: 0.3
+    
+    # Требовать заглавную букву для LOC/PER
+    require_capital: true
+    
+    # Включить проверку на стоп-слова
     enable_stopwords: true
+    
+    # Включить проверку на слияние
     enable_merge_check: true
+    
+    # Максимальное соотношение длин (расширенное / исходное)
+    max_length_ratio: 3.0
 
 checkpoint:
   file: ./checkpoint_test.json

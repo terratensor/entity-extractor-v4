@@ -29,7 +29,7 @@ class WriterWorker(StoppableThread):
     
     def __init__(
         self,
-        config,
+        config,  # это OutputConfig
         input_queue: Queue,
         checkpoint_manager,
         stop_event,
@@ -53,32 +53,34 @@ class WriterWorker(StoppableThread):
         self.output_path = Path(config.path)
         self.delimiter = config.delimiter
         self.include_confidence = config.include_confidence
-        self.include_positions = getattr(config, 'include_positions', False)
+        self.include_positions = config.include_positions  # важно для расширения
         self.flush_interval = config.flush_interval
         self.buffer_size = config.buffer_size
         
-        # Буферы
-        self.buffer = []  # строки для записи
-        self.pending_docs = {}  # id -> {chunk_id: entities}
-        self.completed_docs = set()  # id завершённых документов
-        
-        # Для отслеживания прогресса
-        self.last_flush_time = time.time()
-        self.last_checkpoint_save = 0
-        self.bytes_written = 0
-
-        # [ЭКСПЕРИМЕНТАЛЬНЫЙ ПАРАМЕТР] Включить расширение слов
+        # [ЭКСПЕРИМЕНТАЛЬНЫЙ ПАРАМЕТР] Расширение слов
         self.enable_expansion = getattr(config, 'enable_expansion', False)
         self.expander = None
         
         if self.enable_expansion:
             expansion_params = getattr(config, 'expansion_params', {})
             self.expander = WordExpander(expansion_params)
-            logger.info(f"🤖 WordExpander инициализирован (включено расширение слов)")        
+            logger.info(f"🤖 WordExpander инициализирован (включено расширение слов)")
+            logger.info(f"   Параметры: {expansion_params}")
         
-        self.doc_texts = {}  # doc_id -> original_text
-        self.text_cleanup_threshold = 1000  # очищаем старые тексты
-
+        # Буферы
+        self.buffer = []
+        self.pending_docs = {}
+        self.completed_docs = set()
+        
+        # Для текстов документов (нужно для расширения)
+        self.doc_texts = {}
+        self.text_cleanup_threshold = 1000
+        
+        # Для отслеживания прогресса
+        self.last_flush_time = time.time()
+        self.last_checkpoint_save = 0
+        self.bytes_written = 0
+        
         # Статистика
         self.stats = {
             'processed_chunks': 0,
@@ -95,6 +97,7 @@ class WriterWorker(StoppableThread):
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         
         logger.info(f"🤖 {self.name} инициализирован, выходной файл: {self.output_path}")
+        logger.info(f"   include_positions: {self.include_positions}, enable_expansion: {self.enable_expansion}")
     
     def run(self) -> None:
         """Основной цикл обработки результатов."""
@@ -246,12 +249,9 @@ class WriterWorker(StoppableThread):
             doc_id: ID документа
             entities: список сущностей
         """
-        # [ЭКСПЕРИМЕНТАЛЬНЫЙ КОД] Сохраняем текущий текст документа для расширения
-        # Примечание: нам нужен доступ к полному тексту документа
-        # Пока передаем пустую строку, потом добавим
-
+        # Получаем текст документа для расширения
         doc_text = self.doc_texts.get(doc_id, "")
-
+        
         for entity in entities:
             processed_entity = entity
             
@@ -260,9 +260,12 @@ class WriterWorker(StoppableThread):
                 processed_entity = self.expander.expand_entity(entity, doc_text)
                 
                 # Логируем каждое 10-е расширение для отладки
-                if self.expander.stats['expanded'] % 10 == 0 and self.expander.stats['expanded'] > 0:
-                    logger.debug(f"Расширение #{self.expander.stats['expanded']}: "
-                            f"'{entity['text']}' -> '{processed_entity['text']}'")
+                exp_stats = self.expander.get_stats()
+                expanded_total = exp_stats.get('expanded_total', 0)
+                
+                if expanded_total % 10 == 0 and expanded_total > 0:
+                    logger.debug(f"📊 Статистика расширений: {expanded_total} / {exp_stats.get('attempts', 0)} "
+                            f"({exp_stats.get('expand_percent', 0)}%)")
             
             row = [
                 doc_id,
@@ -278,17 +281,28 @@ class WriterWorker(StoppableThread):
                 if processed_entity.get('expanded'):
                     row.extend([0, 0])  # заглушка
                 else:
-                    row.append(processed_entity.get('start', 0))
-                    row.append(processed_entity.get('end', 0))
+                    # Берем первую и последнюю позицию
+                    if 'positions' in processed_entity and processed_entity['positions']:
+                        first_pos = processed_entity['positions'][0]
+                        last_pos = processed_entity['positions'][-1]
+                        row.append(first_pos.get('start', 0))
+                        row.append(last_pos.get('end', 0))
+                    else:
+                        row.extend([0, 0])
             
             self.buffer.append(row)
-            
+        
         # Периодический вывод статистики расширений
-        if self.enable_expansion and self.expander and self.stats['completed_docs'] % 100 == 0:
+        if (self.enable_expansion and self.expander and 
+            self.stats['completed_docs'] % 100 == 0 and self.stats['completed_docs'] > 0):
             exp_stats = self.expander.get_stats()
-            logger.info(f"📊 Статистика расширений: попыток={exp_stats['attempts']}, "
-                    f"расширено={exp_stats['expanded']}, отклонено={exp_stats['rejected']}")
-    
+            expanded = exp_stats.get('expanded_total', 0)
+            attempts = exp_stats.get('attempts', 0)
+            percent = exp_stats.get('expand_percent', 0)
+            
+            logger.info(f"📊 Статистика расширений: попыток={attempts}, "
+                    f"расширено={expanded} ({percent}%)")
+            
     def _check_flush(self) -> None:
         """Проверяет необходимость сброса буфера на диск."""
         should_flush = (
