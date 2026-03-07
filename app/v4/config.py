@@ -154,6 +154,7 @@ class LoggingConfig:
     level: str = "INFO"
     file: Optional[str] = "./batch_processor_v4.log"
     format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    verbose: bool = False  # NEW: подробная отладка для расширений
     
     @classmethod
     def from_dict(cls, data: dict):

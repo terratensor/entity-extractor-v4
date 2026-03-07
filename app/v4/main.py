@@ -205,6 +205,7 @@ class PipelineV4:
             input_queue=self.queue3,
             checkpoint_manager=self.checkpoint,
             stop_event=self.shutdown.stop_event,
+            verbose=self.config.logging.verbose,  # NEW
             name="Writer"
         )
         self.writer.start()

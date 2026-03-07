@@ -33,6 +33,7 @@ class WriterWorker(StoppableThread):
         input_queue: Queue,
         checkpoint_manager,
         stop_event,
+        verbose: bool = False,  # NEW
         name: str = "WriterWorker"
     ):
         """
@@ -48,6 +49,8 @@ class WriterWorker(StoppableThread):
         self.config = config
         self.input_queue = input_queue
         self.checkpoint = checkpoint_manager
+
+        self.verbose = verbose
         
         # Параметры вывода
         self.output_path = Path(config.path)
@@ -63,6 +66,8 @@ class WriterWorker(StoppableThread):
         
         if self.enable_expansion:
             expansion_params = getattr(config, 'expansion_params', {})
+            # Добавляем verbose из глобального конфига
+            expansion_params['verbose'] = self.verbose  # <-- ВАЖНО!
             self.expander = WordExpander(expansion_params)
             logger.info(f"🤖 WordExpander инициализирован (включено расширение слов)")
             logger.info(f"   Параметры: {expansion_params}")
@@ -206,7 +211,9 @@ class WriterWorker(StoppableThread):
             if doc_id not in self.doc_text_parts:
                 self.doc_text_parts[doc_id] = {}
             self.doc_text_parts[doc_id][chunk_id] = result['text']
-            logger.warning(f"🔥 Сохранен чанк {chunk_id}/{total_chunks} для doc {doc_id}, длина: {len(result['text'])}")
+            
+            if self.verbose:
+                logger.warning(f"🔥 Сохранен чанк {chunk_id}/{total_chunks} для doc {doc_id}, длина: {len(result['text'])}")
             
             # Если получили все чанки - собираем полный текст
             if len(self.doc_text_parts[doc_id]) == total_chunks:
@@ -216,7 +223,9 @@ class WriterWorker(StoppableThread):
                     if i in self.doc_text_parts[doc_id]:
                         full_text += self.doc_text_parts[doc_id][i]
                 self._store_doc_text(doc_id, full_text)
-                logger.warning(f"🔥 Собран ПОЛНЫЙ текст для doc {doc_id}, длина: {len(full_text)}")
+                
+                if self.verbose:
+                    logger.warning(f"🔥 Собран ПОЛНЫЙ текст для doc {doc_id}, длина: {len(full_text)}")
                 
                 # Очищаем части, они больше не нужны
                 del self.doc_text_parts[doc_id]
@@ -262,23 +271,27 @@ class WriterWorker(StoppableThread):
             parts = self.doc_text_parts[doc_id]
             # Проверяем, что у нас есть информация о total_chunks
             # В реальности это должно быть в pending_docs, но подстрахуемся
-            logger.warning(f"🔥 ВНИМАНИЕ: doc {doc_id} пишется без полного текста!")
-        
-        logger.warning(f"🔥 _write_entities для doc {doc_id}, entities: {len(entities)}, текст длина: {len(doc_text)}")
+            if self.verbose:
+                logger.warning(f"🔥 ВНИМАНИЕ: doc {doc_id} пишется без полного текста!")
+        if self.verbose:
+            logger.warning(f"🔥 _write_entities для doc {doc_id}, entities: {len(entities)}, текст длина: {len(doc_text)}")
         
         for i, entity in enumerate(entities):
-            logger.warning(f"🔥 entity {i}: type={entity.get('type')}, text='{entity.get('text')}'")
-            logger.warning(f"🔥   has positions: {'positions' in entity}")
+            if self.verbose:
+                logger.warning(f"🔥 entity {i}: type={entity.get('type')}, text='{entity.get('text')}'")
+                logger.warning(f"🔥   has positions: {'positions' in entity}")
             
             processed_entity = entity
             
             # [ЭКСПЕРИМЕНТАЛЬНЫЙ КОД] Расширение слов
             if self.enable_expansion and self.expander and 'positions' in entity:
-                logger.warning(f"🔥   ПОПЫТКА РАСШИРЕНИЯ для '{entity.get('text')}'")
+                if self.verbose:
+                    logger.warning(f"🔥   ПОПЫТКА РАСШИРЕНИЯ для '{entity.get('text')}'")
                 processed_entity = self.expander.expand_entity(entity, doc_text)
                 
                 if processed_entity != entity:
-                    logger.warning(f"🔥   РАСШИРЕНО: '{entity.get('text')}' -> '{processed_entity.get('text')}'")
+                    if self.verbose:
+                        logger.warning(f"🔥   РАСШИРЕНО: '{entity.get('text')}' -> '{processed_entity.get('text')}'")
             
             row = [
                 doc_id,
