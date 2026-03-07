@@ -194,11 +194,14 @@ class TokenizerWorker(StoppableThread):
                 start_pos = None
                 end_pos = None
                 
-                for offset in offsets:
-                    if offset and offset[0] != 0 and offset[1] != 0:
-                        if start_pos is None:
-                            start_pos = offset[0]
-                        end_pos = offset[1]
+                if offsets and len(offsets) > 0:
+                    start_pos = None
+                    end_pos = None
+                    for offset in offsets:
+                        if offset and offset[1] > 0:  # только проверяем, что есть длина
+                            if start_pos is None:
+                                start_pos = offset[0]
+                            end_pos = offset[1]
                 
                 if start_pos is not None and end_pos is not None:
                     chunk_text = text[start_pos:end_pos]

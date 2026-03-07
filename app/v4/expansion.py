@@ -110,10 +110,17 @@ class WordExpander:
         start_pos = first_pos['start']
         end_pos = last_pos['end']
         
+        # [ОТЛАДКА] Печатаем информацию о сущности
+        logger.warning(f"🔍 РАСШИРЕНИЕ: '{entity['text']}' ({entity['type']}) "
+                    f"позиции: {start_pos}-{end_pos}")
+        logger.warning(f"   Текст вокруг: '{original_text[max(0, start_pos-20):min(len(original_text), end_pos+20)]}'")
+
         # Проверяем, нужно ли расширять
         should, reason = self._should_expand(
             entity['text'], start_pos, end_pos, original_text, entity['type']
         )
+
+        logger.warning(f"   _should_expand: {should}, причина: {reason}")
         
         if not should:
             self.stats['rejected'] += 1
@@ -153,34 +160,45 @@ class WordExpander:
         Returns:
             (bool, str): (нужно ли расширять, причина отказа)
         """
+        logger.warning(f"   _should_expand проверка для '{text}':")
+
         # [ПАРАМЕТР] Проверка 1: минимальная длина
         if len(text) < self.config['min_token_length']:
+            logger.warning(f"      ❌ rejected_length: длина {len(text)} < {self.config['min_token_length']}")
             return False, 'length'
         
         # [ПАРАМЕТР] Проверка 2: стоп-слова
         if self.config['enable_stopwords']:
             clean_text = text.lower().strip('▁')
             if clean_text in self.STOP_WORDS:
+                logger.warning(f"      ❌ rejected_stopword: '{clean_text}' в стоп-словах")
                 return False, 'stopword'
         
         # Проверка 3: если после end_pos сразу пробел - слово полное
         if end_pos >= len(original_text):
+            logger.warning(f"      ❌ конец текста")
             return False, None
         
         next_char = original_text[end_pos]
+        logger.warning(f"      следующий символ: '{next_char}' (код {ord(next_char)})")
+
         if next_char in self.WORD_BREAKS:
+            logger.warning(f"      ❌ следующий символ - разделитель")
             return False, None
         
         # Проверка 4: следующий символ должен быть буквой
         if not next_char.isalpha():
+            logger.warning(f"      ❌ следующий символ не буква")
             return False, None
         
         # [ПАРАМЕТР] Проверка 5: следующая буква должна быть строчной
         # (новые имена обычно с заглавной)
         if self.config['require_capital'] and entity_type in ['LOC', 'PER']:
             if not next_char.islower():
+                logger.warning(f"      ❌ rejected_capital: следующая буква '{next_char}' не строчная")
                 return False, 'capital'
         
+        logger.warning(f"      ✅ можно расширять")
         return True, None
     
     def _expand_to_full_word(self, text: str, start_pos: int, end_pos: int,

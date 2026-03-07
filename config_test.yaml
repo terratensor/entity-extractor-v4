@@ -2,19 +2,19 @@ source:
   host: localhost
   port: 9306
   table: library2026
-  batch_size: 1000
+  batch_size: 1
 
 model:
   name: Davlan/xlm-roberta-large-ner-hrl
   max_tokens: 512
   overlap_ratio: 0.0
   min_confidence: 0.5
-  include_positions: false
+  include_positions: true
 
 queues:
-  queue1_size: 10000
-  queue2_size: 1000
-  queue3_size: 2000
+  queue1_size: 1
+  queue2_size: 1
+  queue3_size: 1
 
 tokenizer:
   num_workers: 8

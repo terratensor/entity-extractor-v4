@@ -201,6 +201,7 @@ class WriterWorker(StoppableThread):
 
         # [НОВОЕ] Сохраняем текст из первого чанка
         if chunk_id == 0 and 'text' in result:
+            logger.warning(f"🔥 Сохранен текст для doc {doc_id}, длина: {len(result['text'])}")
             self._store_doc_text(doc_id, result.get('text', ''))
         
         # Обновляем статистику
@@ -249,23 +250,27 @@ class WriterWorker(StoppableThread):
             doc_id: ID документа
             entities: список сущностей
         """
+        # [ОТЛАДКА] Проверяем, что функция вообще вызывается
+        logger.warning(f"🔥 _write_entities вызван для doc {doc_id}, entities: {len(entities)}")
+        logger.warning(f"🔥 enable_expansion={self.enable_expansion}, expander={self.expander is not None}")
+        
         # Получаем текст документа для расширения
         doc_text = self.doc_texts.get(doc_id, "")
+        logger.warning(f"🔥 doc_text длина: {len(doc_text)}")
         
-        for entity in entities:
+        for i, entity in enumerate(entities):
+            logger.warning(f"🔥 entity {i}: type={entity.get('type')}, text='{entity.get('text')}'")
+            logger.warning(f"🔥   has positions: {'positions' in entity}")
+            
             processed_entity = entity
             
             # [ЭКСПЕРИМЕНТАЛЬНЫЙ КОД] Расширение слов
             if self.enable_expansion and self.expander and 'positions' in entity:
+                logger.warning(f"🔥   ПОПЫТКА РАСШИРЕНИЯ для '{entity.get('text')}'")
                 processed_entity = self.expander.expand_entity(entity, doc_text)
                 
-                # Логируем каждое 10-е расширение для отладки
-                exp_stats = self.expander.get_stats()
-                expanded_total = exp_stats.get('expanded_total', 0)
-                
-                if expanded_total % 10 == 0 and expanded_total > 0:
-                    logger.debug(f"📊 Статистика расширений: {expanded_total} / {exp_stats.get('attempts', 0)} "
-                            f"({exp_stats.get('expand_percent', 0)}%)")
+                if processed_entity != entity:
+                    logger.warning(f"🔥   РАСШИРЕНО: '{entity.get('text')}' -> '{processed_entity.get('text')}'")
             
             row = [
                 doc_id,

@@ -251,6 +251,7 @@ class GPUWorker(StoppableThread):
                 'id': chunk['id'],
                 'chunk_id': chunk['chunk_id'],
                 'total_chunks': chunk['total_chunks'],
+                'text': chunk['text'],  # <-- ДОБАВИТЬ!
                 'entities': entities,
                 'stats': {
                     'tokens': len(chunk['input_ids']),
@@ -341,6 +342,7 @@ class GPUWorker(StoppableThread):
     def _merge_tokens_v1(self, token_entities: List[Dict], original_text: str) -> Optional[Dict]:
         """
         ТОЧНАЯ КОПИЯ ИЗ v1 merge_token_entities
+        Добавлены позиции для расширения
         """
         if not token_entities:
             return None
@@ -378,147 +380,29 @@ class GPUWorker(StoppableThread):
         if len(full_text) < 2:
             return None
         
-        return {
+        # Базовый результат
+        result = {
             'text': full_text,
             'type': entity_type,
             'confidence': round(confidence, 4)
         }
+        
+        # [ВАЖНО] Добавляем позиции для каждого токена
+        # Это нужно для расширения слов в WriterWorker
+        if self.include_positions:
+            result['positions'] = [
+                {'start': t['start'], 'end': t['end']} 
+                for t in sorted_tokens
+            ]
+        
+        return result
     
     def _get_entity_type(self, label: str) -> str:
         """Извлекает тип сущности из BIO-тега."""
         if label.startswith(('B-', 'I-')):
             return label[2:]
         return label
-    
-    # def _merge_token_entities(self, token_entities: List[Dict], original_text: str) -> Optional[Dict]:
-    #     """
-    #     Объединяет токены одной сущности в целое слово с правильными пробелами.
-    #     """
-    #     if not token_entities:
-    #         return None
-        
-    #     # Сортируем токены по позиции
-    #     sorted_tokens = sorted(token_entities, key=lambda x: x['start'])
-        
-    #     # Получаем текст напрямую из оригинального текста по позициям
-    #     start_pos = sorted_tokens[0]['start']
-    #     end_pos = sorted_tokens[-1]['end']
-        
-    #     # Вырезаем текст из оригинала
-    #     full_text = original_text[start_pos:end_pos]
-        
-    #     # Очищаем от лишних пробелов, но сохраняем внутренние
-    #     full_text = ' '.join(full_text.split())
-        
-    #     # Если текст пустой или слишком короткий, пробуем склеить токены
-    #     if not full_text or len(full_text) < 2:
-    #         # Запасной вариант: склейка токенов
-    #         text_parts = []
-    #         last_end = None
-            
-    #         for token in sorted_tokens:
-    #             # Убираем символ подчёркивания в начале токена
-    #             word = token['word'].replace('▁', '')
-                
-    #             # Добавляем пробел, если это не первый токен и есть разрыв
-    #             if last_end is not None and token['start'] > last_end:
-    #                 if original_text[last_end:token['start']].strip():
-    #                     text_parts.append(' ')
-                
-    #             text_parts.append(word)
-    #             last_end = token['end']
-            
-    #         full_text = ''.join(text_parts)
-    #         full_text = ' '.join(full_text.split())
-        
-    #     # 🔍 Новая фильтрация: отбрасываем явный мусор
-    #     # 1. Слишком короткие (меньше 2 символов)
-    #     if len(full_text) < 2:
-    #         return None
-        
-    #     # 2. Состоит только из пунктуации или пробелов
-    #     if all(c in '.,!?;:-–—()[]{}«»""\'\' ' for c in full_text):
-    #         return None
-        
-    #     # 3. Начинается с пробела или пунктуации (кроме дефиса в начале слова)
-    #     if full_text and full_text[0] in '.,!?;:()[]{}«»""\'':
-    #         return None
-        
-    #     # 4. Содержит явные признаки мусора (цифры+буквы вперемешку без смысла)
-    #     # Но оставляем нормальные слова с цифрами (например, "1999 год")
-        
-    #     # Берём минимальный score
-    #     confidence = min(t['score'] for t in sorted_tokens)
-        
-    #     # Определяем тип
-    #     first_label = sorted_tokens[0]['entity']
-    #     entity_type = self.ENTITY_GROUP_MAP.get(first_label, 'MISC')
-        
-    #     # 5. Если тип не LOC/PER/ORG - отбрасываем (если не нужны DATE и MISC)
-    #     if entity_type not in ['LOC', 'PER', 'ORG']:
-    #         return None
-        
-    #     result = {
-    #         'text': full_text,
-    #         'type': entity_type,
-    #         'confidence': round(confidence, 4)
-    #     }
-        
-    #     # Опционально добавляем позиции
-    #     if self.include_positions:
-    #         result['positions'] = [
-    #             {'start': t['start'], 'end': t['end']} 
-    #             for t in sorted_tokens
-    #         ]
-        
-    #     return result
-    
-    # def _extract_entities_from_tokens(self, token_entities: List[Dict], original_text: str) -> List[Dict]:
-    #     """
-    #     Извлекает сущности из списка токенов с BIO-разметкой.
-    #     ТОЧНАЯ КОПИЯ ИЗ v1 extractor.py
-    #     """
-    #     if not token_entities:
-    #         return []
-        
-    #     entities = []
-    #     i = 0
-        
-    #     while i < len(token_entities):
-    #         current = token_entities[i]
-            
-    #         # Пропускаем не-сущности
-    #         if current['entity'] == 'O':
-    #             i += 1
-    #             continue
-            
-    #         # Начало новой сущности (B-)
-    #         if current['entity'].startswith('B-') or i == 0:
-    #             # Собираем все токены этой сущности
-    #             entity_tokens = [current]
-    #             j = i + 1
-                
-    #             while j < len(token_entities):
-    #                 next_token = token_entities[j]
-    #                 # Продолжение сущности (I- того же типа)
-    #                 if next_token['entity'].startswith('I-') and \
-    #                 self._get_entity_type(next_token['entity']) == self._get_entity_type(current['entity']):
-    #                     entity_tokens.append(next_token)
-    #                     j += 1
-    #                 else:
-    #                     break
-                
-    #             # Объединяем токены в сущность
-    #             merged = self._merge_token_entities(entity_tokens, original_text)
-    #             if merged:
-    #                 entities.append(merged)
-                
-    #             i = j
-    #         else:
-    #             i += 1
-        
-    #     return entities
-    
+ 
     def get_stats(self) -> Dict[str, Any]:
         """Возвращает статистику работы воркера."""
         stats = self.stats.copy()
