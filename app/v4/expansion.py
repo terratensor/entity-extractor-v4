@@ -333,18 +333,66 @@ class WordExpander:
             logger.warning(f"      ❌ слишком длинное: {len(full_word)} > {len(text)} * {self.config['max_length_ratio']}")
             return text, 'none'
         
-        # Проверка 2: исходный текст должен быть подстрокой
-        if text not in full_word:
-            logger.warning(f"      ❌ исходный текст '{text}' не подстрока '{full_word}'")
+        # ----------------------------------------------------------------------
+        # ПРОВЕРКА 2: исходный текст должен быть подстрокой (с многоуровневой нормализацией)
+        # ----------------------------------------------------------------------
+        def is_substring_after_normalization(original, expanded):
+            """
+            Многоуровневая проверка на подстроку с нормализацией.
+            """
+            # Уровень 1: нормализация пробелов
+            text_norm = ' '.join(original.split())
+            full_norm = ' '.join(expanded.split())
+            
+            if text_norm in full_norm:
+                return True, 1
+            
+            # Уровень 2: удаляем кавычки с обеих сторон
+            text_unquoted = text_norm.strip('«»""')
+            full_unquoted = full_norm.strip('«»""')
+            
+            if text_unquoted in full_unquoted:
+                return True, 2
+            
+            # Уровень 3: удаляем ВСЕ пробелы в начале и конце
+            text_clean = text_unquoted.strip()
+            full_clean = full_unquoted.strip()
+            
+            if text_clean in full_clean:
+                return True, 3
+            
+            # Уровень 4: разбиваем на слова и проверяем последовательность
+            text_words = text_clean.split()
+            full_words = full_clean.split()
+            
+            if len(text_words) == 0:
+                return False, 4
+            
+            for i in range(len(full_words) - len(text_words) + 1):
+                if full_words[i:i+len(text_words)] == text_words:
+                    return True, 4
+            
+            return False, 4
+
+        # Использование:
+        is_substring, level = is_substring_after_normalization(text, full_word)
+        logger.warning(f"      проверка подстроки: уровень {level}, результат={is_substring}")
+
+        if not is_substring:
+            logger.warning(f"      ❌ исходный текст не подстрока после всех уровней нормализации")
             return text, 'none'
-        
-        # Проверка 3: минимальное покрытие
+                
+        # ----------------------------------------------------------------------
+        # ПРОВЕРКА 3: минимальное покрытие
+        # ----------------------------------------------------------------------
         coverage = len(text) / len(full_word) if len(full_word) > 0 else 0
         if coverage < self.config['min_coverage']:
             logger.warning(f"      ❌ покрытие {coverage:.2f} < {self.config['min_coverage']}")
             return text, 'none'
         
-        # Проверка 4: заглавные буквы для LOC/PER (только для левого расширения)
+        # ----------------------------------------------------------------------
+        # ПРОВЕРКА 4: заглавные буквы для LOC/PER
+        # ----------------------------------------------------------------------
         if (self.config['require_capital'] and entity_type in ['LOC', 'PER'] and left_expanded):
             first_letter = full_word[0]
             if not first_letter.isupper():
