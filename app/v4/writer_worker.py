@@ -16,6 +16,7 @@ from typing import List, Dict, Any, Optional, Set
 from pathlib import Path
 
 from app.v4.shutdown import StoppableThread
+from app.v4.expansion import WordExpander
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,19 @@ class WriterWorker(StoppableThread):
         self.last_flush_time = time.time()
         self.last_checkpoint_save = 0
         self.bytes_written = 0
+
+        # [ЭКСПЕРИМЕНТАЛЬНЫЙ ПАРАМЕТР] Включить расширение слов
+        self.enable_expansion = getattr(config, 'enable_expansion', False)
+        self.expander = None
         
+        if self.enable_expansion:
+            expansion_params = getattr(config, 'expansion_params', {})
+            self.expander = WordExpander(expansion_params)
+            logger.info(f"🤖 WordExpander инициализирован (включено расширение слов)")        
+        
+        self.doc_texts = {}  # doc_id -> original_text
+        self.text_cleanup_threshold = 1000  # очищаем старые тексты
+
         # Статистика
         self.stats = {
             'processed_chunks': 0,
@@ -182,6 +195,10 @@ class WriterWorker(StoppableThread):
         chunk_id = result['chunk_id']
         total_chunks = result['total_chunks']
         entities = result.get('entities', [])
+
+        # [НОВОЕ] Сохраняем текст из первого чанка
+        if chunk_id == 0 and 'text' in result:
+            self._store_doc_text(doc_id, result.get('text', ''))
         
         # Обновляем статистику
         self.stats['processed_chunks'] += 1
@@ -229,21 +246,48 @@ class WriterWorker(StoppableThread):
             doc_id: ID документа
             entities: список сущностей
         """
+        # [ЭКСПЕРИМЕНТАЛЬНЫЙ КОД] Сохраняем текущий текст документа для расширения
+        # Примечание: нам нужен доступ к полному тексту документа
+        # Пока передаем пустую строку, потом добавим
+
+        doc_text = self.doc_texts.get(doc_id, "")
+
         for entity in entities:
+            processed_entity = entity
+            
+            # [ЭКСПЕРИМЕНТАЛЬНЫЙ КОД] Расширение слов
+            if self.enable_expansion and self.expander and 'positions' in entity:
+                processed_entity = self.expander.expand_entity(entity, doc_text)
+                
+                # Логируем каждое 10-е расширение для отладки
+                if self.expander.stats['expanded'] % 10 == 0 and self.expander.stats['expanded'] > 0:
+                    logger.debug(f"Расширение #{self.expander.stats['expanded']}: "
+                            f"'{entity['text']}' -> '{processed_entity['text']}'")
+            
             row = [
                 doc_id,
-                entity.get('type', 'MISC'),
-                entity.get('text', '')
+                processed_entity.get('type', 'MISC'),
+                processed_entity.get('text', '')
             ]
             
             if self.include_confidence:
-                row.append(entity.get('confidence', 0.5))
+                row.append(processed_entity.get('confidence', 0.5))
             
             if self.include_positions:
-                row.append(entity.get('start', 0))
-                row.append(entity.get('end', 0))
+                # Для расширенных сущностей позиции могут быть неактуальны
+                if processed_entity.get('expanded'):
+                    row.extend([0, 0])  # заглушка
+                else:
+                    row.append(processed_entity.get('start', 0))
+                    row.append(processed_entity.get('end', 0))
             
             self.buffer.append(row)
+            
+        # Периодический вывод статистики расширений
+        if self.enable_expansion and self.expander and self.stats['completed_docs'] % 100 == 0:
+            exp_stats = self.expander.get_stats()
+            logger.info(f"📊 Статистика расширений: попыток={exp_stats['attempts']}, "
+                    f"расширено={exp_stats['expanded']}, отклонено={exp_stats['rejected']}")
     
     def _check_flush(self) -> None:
         """Проверяет необходимость сброса буфера на диск."""
@@ -267,7 +311,18 @@ class WriterWorker(StoppableThread):
             self.stats['buffer_flushes'] += 1
             
             logger.debug(f"{self.name}: буфер сброшен, записей: {len(self.buffer)}")
-    
+
+    # [ЭКСПЕРИМЕНТАЛЬНЫЙ КОД]
+    def _store_doc_text(self, doc_id: int, text: str):
+        """Сохраняет текст документа для последующего расширения."""
+        self.doc_texts[doc_id] = text
+        
+        # Очистка старых записей (чтобы не разрасталась память)
+        if len(self.doc_texts) > self.text_cleanup_threshold:
+            # Удаляем записи с id меньше текущего - 1000
+            min_keep = doc_id - 1000
+            self.doc_texts = {k: v for k, v in self.doc_texts.items() if k > min_keep}
+
     def _check_checkpoint(self) -> None:
         """Проверяет необходимость сохранения чекпоинта."""
         if not self.completed_docs:

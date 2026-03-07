@@ -36,6 +36,14 @@ output:
   include_positions: false
   flush_interval: 10
   buffer_size: 1000
+  include_positions: true  # ВАЖНО для расширения
+
+  # [ЭКСПЕРИМЕНТАЛЬНЫЕ ПАРАМЕТРЫ]
+  enable_expansion: true
+  expansion_params:
+    min_token_length: 2
+    enable_stopwords: true
+    enable_merge_check: true
 
 checkpoint:
   file: ./checkpoint_test.json
