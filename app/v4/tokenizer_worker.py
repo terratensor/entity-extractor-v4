@@ -185,21 +185,34 @@ class TokenizerWorker(StoppableThread):
             attention_mask = inputs['attention_mask'][i]
             offsets = inputs['offset_mapping'][i]
             
-            # Определяем глобальные позиции чанка
-            global_start = None
-            global_end = None
+            # ------------------------------------------------------------------
+            # НОВЫЙ МЕТОД: надежное определение позиций
+            # ------------------------------------------------------------------
+            # Собираем все валидные start и end позиции
+            valid_starts = []
+            valid_ends = []
             
             for offset in offsets:
-                if offset and offset[1] > 0:  # есть ненулевая длина
-                    if global_start is None:
-                        global_start = offset[0]
-                    global_end = offset[1]
+                if offset and offset[1] > 0:  # ненулевая длина
+                    valid_starts.append(offset[0])
+                    valid_ends.append(offset[1])
             
-            # Вырезаем текст чанка
-            if global_start is not None and global_end is not None:
+            if valid_starts and valid_ends:
+                # Берем минимальный start и максимальный end
+                global_start = min(valid_starts)
+                global_end = max(valid_ends)
+                
+                # Вырезаем текст по этим позициям
                 chunk_text = text[global_start:global_end]
+                
+                # Проверка на всякий случай
+                if not chunk_text or len(chunk_text) < 2:
+                    # Fallback
+                    chunk_text = self.tokenizer.decode(input_ids, skip_special_tokens=True)
+                    global_start = 0
+                    global_end = len(chunk_text)
             else:
-                # Запасной вариант: декодируем токены
+                # Fallback если нет валидных offsets
                 chunk_text = self.tokenizer.decode(input_ids, skip_special_tokens=True)
                 global_start = 0
                 global_end = len(chunk_text)
@@ -211,8 +224,8 @@ class TokenizerWorker(StoppableThread):
                 'input_ids': input_ids,
                 'attention_mask': attention_mask,
                 'text': chunk_text,
-                'global_start': global_start,  # позиция в оригинале
-                'global_end': global_end,      # конечная позиция
+                'global_start': global_start,
+                'global_end': global_end,
                 'token_count': len(input_ids)
             })
             
@@ -221,9 +234,8 @@ class TokenizerWorker(StoppableThread):
             self.stats['total_tokens'] += len(input_ids)
         
         self.stats['processed_docs'] += 1
-        
         return chunks
-    
+        
     def get_stats(self) -> Dict[str, Any]:
         """Возвращает статистику работы воркера."""
         stats = self.stats.copy()
