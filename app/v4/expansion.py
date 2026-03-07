@@ -260,6 +260,11 @@ class WordExpander:
         max_left = self.config['max_search_left']
         max_right = self.config['max_search_right']
         
+        # Кавычки, которые нужно сохранять
+        QUOTE_MARKS = {'«', '»', '"', "'", '“', '”', '„', '‟'}
+        # Пунктуация в конце слова (кроме кавычек)
+        PUNCTUATION_ENDS = '.,!?;:()[]{}'
+        
         # ----------------------------------------------------------------------
         # РАСШИРЕНИЕ ВЛЕВО
         # ----------------------------------------------------------------------
@@ -273,8 +278,7 @@ class WordExpander:
                 prev_char = original_text[word_start - 1]
                 logger.warning(f"        символ {word_start-1}: '{prev_char}'")
                 
-                # Останавливаемся на разделителях (но пропускаем кавычки)
-                if prev_char in self.WORD_BREAKS and prev_char not in self.QUOTE_MARKS:
+                if prev_char in self.WORD_BREAKS and prev_char not in QUOTE_MARKS:
                     logger.warning(f"          стоп - разделитель")
                     break
                 
@@ -296,8 +300,7 @@ class WordExpander:
                 next_char = original_text[word_end]
                 logger.warning(f"        символ {word_end}: '{next_char}'")
                 
-                # Останавливаемся на разделителях (но пропускаем кавычки)
-                if next_char in self.WORD_BREAKS and next_char not in self.QUOTE_MARKS:
+                if next_char in self.WORD_BREAKS and next_char not in QUOTE_MARKS:
                     logger.warning(f"          стоп - разделитель")
                     break
                 
@@ -334,54 +337,18 @@ class WordExpander:
             return text, 'none'
         
         # ----------------------------------------------------------------------
-        # ПРОВЕРКА 2: исходный текст должен быть подстрокой (с многоуровневой нормализацией)
+        # ПРОВЕРКА 2: для расширенных слов доверяем оригинальному тексту
         # ----------------------------------------------------------------------
-        def is_substring_after_normalization(original, expanded):
-            """
-            Многоуровневая проверка на подстроку с нормализацией.
-            """
-            # Уровень 1: нормализация пробелов
-            text_norm = ' '.join(original.split())
-            full_norm = ' '.join(expanded.split())
-            
-            if text_norm in full_norm:
-                return True, 1
-            
-            # Уровень 2: удаляем кавычки с обеих сторон
-            text_unquoted = text_norm.strip('«»""')
-            full_unquoted = full_norm.strip('«»""')
-            
-            if text_unquoted in full_unquoted:
-                return True, 2
-            
-            # Уровень 3: удаляем ВСЕ пробелы в начале и конце
-            text_clean = text_unquoted.strip()
-            full_clean = full_unquoted.strip()
-            
-            if text_clean in full_clean:
-                return True, 3
-            
-            # Уровень 4: разбиваем на слова и проверяем последовательность
-            text_words = text_clean.split()
-            full_words = full_clean.split()
-            
-            if len(text_words) == 0:
-                return False, 4
-            
-            for i in range(len(full_words) - len(text_words) + 1):
-                if full_words[i:i+len(text_words)] == text_words:
-                    return True, 4
-            
-            return False, 4
-
-        # Использование:
-        is_substring, level = is_substring_after_normalization(text, full_word)
-        logger.warning(f"      проверка подстроки: уровень {level}, результат={is_substring}")
-
-        if not is_substring:
-            logger.warning(f"      ❌ исходный текст не подстрока после всех уровней нормализации")
-            return text, 'none'
-                
+        if left_expanded or right_expanded:
+            # Мы расширили слово, используя оригинальный текст
+            # Доверяем оригиналу, даже если оно не содержит исходный текст модели
+            logger.warning(f"      ✅ слово расширено, доверяем оригиналу")
+        else:
+            # Слово не расширялось, проверяем подстроку как обычно
+            if text not in full_word:
+                logger.warning(f"      ❌ исходный текст не подстрока (без расширения)")
+                return text, 'none'
+        
         # ----------------------------------------------------------------------
         # ПРОВЕРКА 3: минимальное покрытие
         # ----------------------------------------------------------------------
@@ -391,69 +358,37 @@ class WordExpander:
             return text, 'none'
         
         # ----------------------------------------------------------------------
-        # ПРОВЕРКА 4: заглавные буквы для LOC/PER
+        # ПРОВЕРКА 4: заглавные буквы для LOC/PER (пропуская кавычки)
         # ----------------------------------------------------------------------
         if (self.config['require_capital'] and entity_type in ['LOC', 'PER'] and left_expanded):
-            first_letter = full_word[0]
+            # Ищем первую букву (пропуская кавычки)
+            first_letter = None
+            for char in full_word:
+                if char.isalpha():
+                    first_letter = char
+                    break
+            
+            if first_letter is None:
+                logger.warning(f"      ❌ в слове нет букв")
+                return text, 'none'
+            
             if not first_letter.isupper():
                 logger.warning(f"      ❌ первая буква '{first_letter}' не заглавная")
                 return text, 'none'
+            else:
+                logger.warning(f"      ✅ первая буква '{first_letter}' заглавная")
+        
+        # ----------------------------------------------------------------------
+        # ОЧИСТКА: убираем пунктуацию в конце, НО НЕ КАВЫЧКИ
+        # ----------------------------------------------------------------------
+        full_word_clean = full_word.rstrip(PUNCTUATION_ENDS)
+        if full_word_clean != full_word:
+            logger.warning(f"      очистка пунктуации: '{full_word}' -> '{full_word_clean}'")
+            full_word = full_word_clean
         
         logger.warning(f"      ✅ расширение: '{text}' -> '{full_word}'")
         return full_word, expand_type
-    
-    def _check_word_merge(self, original_text: str, full_word: str,
-                        start_pos: int, end_pos: int) -> bool:
-        """
-        Проверяет, не является ли расширение результатом слияния слов.
-        """
-        # Если внутри полного слова есть пробелы - это несколько слов
-        if ' ' in full_word and '-' not in full_word:
-            original_part = original_text[start_pos:end_pos]
-            if len(original_part) < len(full_word) * 0.3:
-                return True
         
-        # Проверка на типичные паттерны слияния
-        if end_pos < len(original_text):
-            next_char = original_text[end_pos]
-            last_char = original_text[end_pos - 1] if end_pos > 0 else ''
-            
-            # Признаки возможного слияния: согласная + гласная на стыке
-            if (last_char.isalpha() and next_char.isalpha() and
-                last_char.lower() not in self.VOWELS and
-                next_char.lower() in self.VOWELS):
-                
-                # ДОПОЛНИТЕЛЬНЫЕ ПРОВЕРКИ:
-                
-                # 1. Проверяем, что после гласной есть буквы (это часть слова, а не окончание)
-                if end_pos + 1 < len(original_text):
-                    next_next = original_text[end_pos + 1]
-                    if next_next.isalpha():
-                        # Если после гласной еще буквы - это часть слова, а не окончание
-                        # Значит, это НЕ слияние
-                        return False
-                
-                # 2. Проверяем, не является ли это типичным окончанием
-                # Типичные окончания в русском языке: а, я, ы, и, е, ё, ю, й
-                common_endings = {'а', 'я', 'ы', 'и', 'е', 'ё', 'ю', 'й'}
-                if next_char.lower() in common_endings:
-                    # Проверяем, что после окончания идет пробел
-                    if end_pos + 1 >= len(original_text) or original_text[end_pos + 1] in self.WORD_BREAKS:
-                        # Это нормальное окончание, а не слияние
-                        return False
-                
-                # 3. Проверяем длину исходного слова
-                # Если исходное слово очень короткое (1-2 буквы), это может быть предлог
-                if len(full_word) < 3:
-                    # Проверяем по стоп-словам
-                    if full_word.lower() in self.STOP_WORDS:
-                        return True  # это предлог - возможно слияние
-                
-                # Если все проверки пройдены - это подозрительно
-                return True
-        
-        return False
-    
     def get_stats(self) -> Dict:
         """Возвращает статистику расширений."""
         stats = self.stats.copy()
