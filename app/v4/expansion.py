@@ -223,8 +223,14 @@ class WordExpander:
 
     def _clean_entity(self, text: str) -> str:
         """
-        Третий этап: финальная очистка сущности от лишних символов.
-        Удаляются все символы, не являющиеся буквами, цифрами, дефисами или кавычками.
+        Третий этап: финальная очистка сущности.
+        
+        Правила:
+        1. Сохраняем точки в инициалах и сокращениях (Г.В., г., ул., д.)
+        2. Сохраняем дефисы в составных словах (пр-т, Ростов-на-Дону)
+        3. Сохраняем парные кавычки
+        4. Удаляем одиночные кавычки и знаки препинания с концов
+        5. Нормализуем пробелы
         """
         if not text:
             return text
@@ -233,54 +239,76 @@ class WordExpander:
         if self.config.get('verbose', False):
             logger.warning(f"      🧹 финальная очистка: '{text}'")
         
+        import unicodedata
+        import re
+        
         # ----------------------------------------------------------------------
         # Шаг 0: Нормализация Unicode
         # ----------------------------------------------------------------------
-        import unicodedata
         text = unicodedata.normalize('NFKC', text)
         
         # ----------------------------------------------------------------------
-        # Шаг 1: Удаление всех управляющих и служебных символов
+        # Шаг 1: Удаление служебных символов (кроме пробелов)
         # ----------------------------------------------------------------------
-        # Категории Unicode:
-        # Lu - буквы заглавные
-        # Ll - буквы строчные
-        # Lt - буквы для заголовков
-        # Lm - буквы-модификаторы
-        # Lo - прочие буквы
-        # Nd - десятичные цифры
-        allowed_categories = {'Lu', 'Ll', 'Lt', 'Lm', 'Lo', 'Nd'}
-        
-        # Разрешенные символы (дефис, кавычки, пробельные)
-        allowed_chars = {'-', '«', '»', '"', "'", ' ', '\t', '\n', '\r', '\xa0'}
+        # Категории для удаления:
+        # Cc - control
+        # Cf - format
+        # Cn - unassigned
+        # Co - private use
+        # Cs - surrogate
+        control_cats = {'Cc', 'Cf', 'Cn', 'Co', 'Cs'}
         
         cleaned = []
         removed = []
         for char in text:
             cat = unicodedata.category(char)
-            if cat in allowed_categories or char in allowed_chars:
+            if cat not in control_cats or char in {' ', '\t', '\n', '\r', '\xa0'}:
                 cleaned.append(char)
             else:
                 removed.append(f"'{char}' (U+{ord(char):04X})")
         
         if removed and self.config.get('verbose', False):
-            logger.warning(f"         удалены символы: {', '.join(removed)}")
+            logger.warning(f"         удалены служебные символы: {', '.join(removed)}")
         
         text = ''.join(cleaned)
         
         # ----------------------------------------------------------------------
-        # Шаг 2: Нормализация пробельных символов
+        # Шаг 2: Нормализация пробелов
         # ----------------------------------------------------------------------
-        import re
-        # Все виды пробелов -> обычный пробел
         text = re.sub(r'[\s\xa0]+', ' ', text)
         
         # ----------------------------------------------------------------------
-        # Шаг 3: Удаление знаков препинания с концов (циклически)
+        # Шаг 3: Сохраняем точки в инициалах и сокращениях
+        # ----------------------------------------------------------------------
+        # Паттерны для сохранения:
+        # - Инициалы: Г.В. Носовский, А.Т. Фоменко
+        # - Сокращения: г., ул., д., пр-т, т.д., т.п.
+        
+        # Временно заменяем точки на маркер, если они являются частью слова
+        
+        # 3.1 Инициалы (Г.В., А.Т., Т.П.)
+        text = re.sub(r'([А-ЯA-Z])\.([А-ЯA-Z])(?=\.|\s|$)', r'\1@DOT@\2', text)
+        
+        # 3.2 Одиночные инициалы (Г., В., А.)
+        text = re.sub(r'([А-ЯA-Z])\.(?=\s|$)', r'\1@DOT@', text)
+        
+        # 3.3 Сокращения (г., ул., д., пр., т.д., т.п.)
+        abbreviations = ['г', 'ул', 'д', 'пр', 'тд', 'тп']
+        for abbr in abbreviations:
+            pattern = rf'({abbr})\.(?=\s|$)'
+            text = re.sub(pattern, r'\1@DOT@', text, flags=re.IGNORECASE)
+        
+        # 3.4 Числа с точкой (151., 32а.)
+        text = re.sub(r'(\d+)\.(?=\s|$)', r'\1@DOT@', text)
+        
+        if self.config.get('verbose', False) and '@DOT@' in text:
+            logger.warning(f"         защищены точки: {text.count('@DOT@')} шт.")
+        
+        # ----------------------------------------------------------------------
+        # Шаг 4: Удаление знаков препинания с концов (кроме защищенных)
         # ----------------------------------------------------------------------
         # Знаки, которые не могут быть в начале/конце слова
-        # Включаем все виды тире: дефис (-), среднее (–), длинное (—)
-        PUNCTUATION = '.,!?;:…—–'
+        PUNCTUATION = ',!?;:…—–'
         
         changed = True
         while changed and text:
@@ -302,52 +330,67 @@ class WordExpander:
                 changed = True
                 if self.config.get('verbose', False):
                     logger.warning(f"         удален знак '{removed_char}' в конце")
-            
-            if changed and self.config.get('verbose', False):
-                logger.warning(f"         после удаления знаков: '{old_text}' -> '{text}'")
         
         # ----------------------------------------------------------------------
-        # Шаг 4: Удаляем дефисы в начале и конце (на всякий случай)
+        # Шаг 5: Удаляем лишние дефисы в начале и конце
         # ----------------------------------------------------------------------
         text = text.lstrip('-')
         text = text.rstrip('-')
         
         # ----------------------------------------------------------------------
-        # Шаг 5: Удаляем пробелы и схлопываем множественные
+        # Шаг 6: Восстанавливаем точки
         # ----------------------------------------------------------------------
-        text = ' '.join(text.split())
+        text = text.replace('@DOT@', '.')
         
         # ----------------------------------------------------------------------
-        # Шаг 6: Проверяем парность кавычек
+        # Шаг 7: Работа с кавычками
         # ----------------------------------------------------------------------
-        if text and text[0] in self.OPEN_QUOTES:
-            # Есть открывающая кавычка в начале
-            has_close = False
-            for i in range(1, len(text)):
-                if text[i] in self.CLOSE_QUOTES:
-                    has_close = True
-                    break
-            if not has_close:
-                if self.config.get('verbose', False):
-                    logger.warning(f"         удалена открывающая кавычка без пары")
-                text = text[1:]
+        # Анализируем кавычки в контексте
+        quote_pairs = [
+            ('«', '»'),
+            ('"', '"'),
+            ("'", "'"),
+            ('“', '”'),
+            ('„', '‟')
+        ]
         
-        if text and text[-1] in self.CLOSE_QUOTES:
-            # Есть закрывающая кавычка в конце
-            has_open = False
-            for i in range(len(text)-2, -1, -1):
-                if text[i] in self.OPEN_QUOTES:
-                    has_open = True
-                    break
-            if not has_open:
-                if self.config.get('verbose', False):
-                    logger.warning(f"         удалена закрывающая кавычка без пары")
-                text = text[:-1]
+        for open_q, close_q in quote_pairs:
+            # Если есть открывающая, но нет закрывающей - удаляем все вхождения
+            if open_q in text and close_q not in text:
+                count = text.count(open_q)
+                text = text.replace(open_q, '')
+                if self.config.get('verbose', False) and count:
+                    logger.warning(f"         удалены {count} открывающих кавычек '{open_q}' без пары")
+            
+            # Если есть закрывающая, но нет открывающей - удаляем все вхождения
+            if close_q in text and open_q not in text:
+                count = text.count(close_q)
+                text = text.replace(close_q, '')
+                if self.config.get('verbose', False) and count:
+                    logger.warning(f"         удалены {count} закрывающих кавычек '{close_q}' без пары")
+            
+            # Если есть и те и другие - оставляем
+            if open_q in text and close_q in text:
+                # Проверяем, что они парные (четное количество)
+                open_count = text.count(open_q)
+                close_count = text.count(close_q)
+                
+                if open_count != close_count:
+                    if self.config.get('verbose', False):
+                        logger.warning(f"         непарные кавычки: {open_count} открывающих, {close_count} закрывающих")
+                    # Удаляем лишние
+                    while open_count > close_count:
+                        text = text.replace(open_q, '', 1)
+                        open_count -= 1
+                    while close_count > open_count:
+                        text = text.replace(close_q, '', 1)
+                        close_count -= 1
         
         # ----------------------------------------------------------------------
-        # Шаг 7: Финальный trim
+        # Шаг 8: Финальная очистка
         # ----------------------------------------------------------------------
         text = text.strip()
+        text = ' '.join(text.split())
         
         if text != original and self.config.get('verbose', False):
             logger.warning(f"      🧹 итог очистки: '{original}' -> '{text}'")
