@@ -110,29 +110,43 @@ class WordExpander:
         Returns:
             Dict: сущность с возможным расширенным текстом
         """
-        # Проверяем, нужно ли расширять этот тип сущности
+        # ----------------------------------------------------------------------
+        # ПРОВЕРКА ТИПА СУЩНОСТИ
+        # Расширяем только указанные в конфиге типы (LOC, PER, ORG)
+        # ----------------------------------------------------------------------
         expand_types = self.config.get('expand_entity_types', ['LOC', 'PER'])
         if entity['type'] not in expand_types:
             return entity
         
-        # Нужны позиции для расширения
+        # ----------------------------------------------------------------------
+        # ПРОВЕРКА НАЛИЧИЯ ПОЗИЦИЙ
+        # Без позиций невозможно определить, где в тексте находится сущность
+        # ----------------------------------------------------------------------
         if 'positions' not in entity or not entity['positions']:
             return entity
         
         self.stats['attempts'] += 1
         
-        # Берем первую и последнюю позицию
+        # ----------------------------------------------------------------------
+        # ОПРЕДЕЛЕНИЕ ГРАНИЦ СУЩНОСТИ
+        # Берем первую и последнюю позицию из списка
+        # ----------------------------------------------------------------------
         first_pos = entity['positions'][0]
         last_pos = entity['positions'][-1]
         start_pos = first_pos['start']
         end_pos = last_pos['end']
         
-        # Отладка
+        # ----------------------------------------------------------------------
+        # ОТЛАДКА: вывод информации о сущности и контекста
+        # ----------------------------------------------------------------------
         logger.warning(f"🔍 РАСШИРЕНИЕ: '{entity['text']}' ({entity['type']}) "
-                      f"позиции: {start_pos}-{end_pos}")
+                    f"позиции: {start_pos}-{end_pos}")
         logger.warning(f"   Текст вокруг: '{original_text[max(0, start_pos-20):min(len(original_text), end_pos+20)]}'")
 
-        # Проверяем, нужно ли расширять
+        # ----------------------------------------------------------------------
+        # ПРОВЕРКА НЕОБХОДИМОСТИ РАСШИРЕНИЯ
+        # Анализируем символы слева и справа от сущности
+        # ----------------------------------------------------------------------
         should, reason = self._should_expand(
             entity['text'], start_pos, end_pos, original_text, entity['type']
         )
@@ -142,13 +156,18 @@ class WordExpander:
         result_entity = entity.copy()
         
         if should:
-            # Расширяем
-            expanded, expand_type = self._expand_to_full_word(
+            # ----------------------------------------------------------------------
+            # ЭТАП 1: РАСШИРЕНИЕ
+            # Пытаемся расширить сущность влево и/или вправо
+            # ----------------------------------------------------------------------
+            expanded, expand_type, new_start, new_end = self._expand_to_full_word(
                 entity['text'], start_pos, end_pos, original_text, entity['type']
             )
             
             if expanded != entity['text']:
-                # Обновляем статистику по типу расширения
+                # ----------------------------------------------------------------------
+                # ОБНОВЛЕНИЕ СТАТИСТИКИ
+                # ----------------------------------------------------------------------
                 if expand_type == 'left':
                     self.stats['expanded_left'] += 1
                 elif expand_type == 'right':
@@ -156,13 +175,26 @@ class WordExpander:
                 elif expand_type == 'both':
                     self.stats['expanded_both'] += 1
                 
+                # ----------------------------------------------------------------------
+                # СОХРАНЕНИЕ РЕЗУЛЬТАТА РАСШИРЕНИЯ
+                # ----------------------------------------------------------------------
                 result_entity['text'] = expanded
                 result_entity['expanded'] = True
                 result_entity['expansion_type'] = expand_type
                 result_entity['original_text'] = entity['text']
+                
+                # ----------------------------------------------------------------------
+                # [НОВОЕ] ДОБАВЛЕНИЕ НОВЫХ ПОЗИЦИЙ
+                # Сохраняем новые границы сущности после расширения
+                # ----------------------------------------------------------------------
+                if new_start is not None and new_end is not None:
+                    result_entity['positions'] = [{'start': new_start, 'end': new_end}]
+                    result_entity['original_positions'] = entity['positions']
+                    logger.warning(f"      новые позиции: {new_start}-{new_end}")
         
         # ----------------------------------------------------------------------
-        # ТРЕТИЙ ЭТАП: финальная очистка результата
+        # ЭТАП 2: ФИНАЛЬНАЯ ОЧИСТКА РЕЗУЛЬТАТА
+        # Удаляем лишние знаки препинания, проверяем парность кавычек
         # ----------------------------------------------------------------------
         if self.config.get('enable_final_cleaning', True):
             cleaned_text = self._clean_entity(result_entity['text'])
@@ -172,13 +204,17 @@ class WordExpander:
                 result_entity['cleaned'] = True
                 self.stats['cleaned'] += 1
         
-        # После всех расширений, перед возвратом
+        # ----------------------------------------------------------------------
+        # ИТОГОВЫЙ ВЫВОД
+        # ----------------------------------------------------------------------
         logger.warning(f"   📝 ИТОГ: '{entity['text']}' -> '{result_entity['text']}'")
+        if result_entity.get('expanded'):
+            logger.warning(f"      новые позиции: {result_entity['positions'][0]['start']}-{result_entity['positions'][0]['end']}")
         if result_entity.get('cleaned'):
             logger.warning(f"      очищено: да")
 
         return result_entity
-    
+
     def _clean_entity(self, text: str) -> str:
         """
         Третий этап: финальная очистка сущности от лишних знаков препинания.
@@ -400,6 +436,9 @@ class WordExpander:
                             original_text: str, entity_type: str) -> tuple:
         """
         Расширяет до полного слова в ОБЕ стороны.
+        
+        Returns:
+            tuple: (расширенное слово, тип расширения, новый start, новый end)
         """
         logger.warning(f"      🔧 _expand_to_full_word для '{text}' ({start_pos}-{end_pos})")
         
@@ -408,6 +447,8 @@ class WordExpander:
         
         # ----------------------------------------------------------------------
         # РАСШИРЕНИЕ ВЛЕВО
+        # Ищем начало слова, двигаясь влево от start_pos
+        # Останавливаемся на разделителях (пробелы, знаки препинания, кроме кавычек)
         # ----------------------------------------------------------------------
         word_start = start_pos
         left_expanded = False
@@ -419,6 +460,7 @@ class WordExpander:
                 prev_char = original_text[word_start - 1]
                 logger.warning(f"        символ {word_start-1}: '{prev_char}'")
                 
+                # Останавливаемся на разделителях (но пропускаем кавычки)
                 if prev_char in self.WORD_BREAKS and prev_char not in self.ALL_QUOTES:
                     logger.warning(f"          стоп - разделитель")
                     break
@@ -430,6 +472,8 @@ class WordExpander:
         
         # ----------------------------------------------------------------------
         # РАСШИРЕНИЕ ВПРАВО
+        # Ищем конец слова, двигаясь вправо от end_pos
+        # Останавливаемся на разделителях (пробелы, знаки препинания, кроме кавычек)
         # ----------------------------------------------------------------------
         word_end = end_pos
         right_expanded = False
@@ -441,6 +485,7 @@ class WordExpander:
                 next_char = original_text[word_end]
                 logger.warning(f"        символ {word_end}: '{next_char}'")
                 
+                # Останавливаемся на разделителях (но пропускаем кавычки)
                 if next_char in self.WORD_BREAKS and next_char not in self.ALL_QUOTES:
                     logger.warning(f"          стоп - разделитель")
                     break
@@ -457,18 +502,20 @@ class WordExpander:
         
         # ----------------------------------------------------------------------
         # НОВАЯ ПРОВЕРКА: нет ли разделителей ВНУТРИ расширенного слова
+        # Проверяем диапазон между исходным и расширенным
+        # Но разрешаем дефисы и кавычки (для составных слов и названий)
         # ----------------------------------------------------------------------
         if left_expanded or right_expanded:
             logger.warning(f"      проверка наличия разделителей внутри:")
-            # Проверяем диапазон между исходным и расширенным
-            # Но разрешаем дефисы и кавычки
             for pos in range(start_pos, end_pos):
                 char = original_text[pos]
                 if char in self.WORD_BREAKS and char not in self.ALL_QUOTES and char != '-':
                     logger.warning(f"         найден разделитель '{char}' на позиции {pos} - отмена расширения")
-                    return text, 'none'
+                    return text, 'none', start_pos, end_pos
         
-        # Определяем тип расширения
+        # ----------------------------------------------------------------------
+        # ОПРЕДЕЛЕНИЕ ТИПА РАСШИРЕНИЯ
+        # ----------------------------------------------------------------------
         if left_expanded and right_expanded:
             expand_type = 'both'
         elif left_expanded:
@@ -480,34 +527,49 @@ class WordExpander:
         
         logger.warning(f"      полное слово: '{full_word}'")
         logger.warning(f"      тип расширения: {expand_type}")
+        logger.warning(f"      новые позиции: {word_start}-{word_end}")
         
         # ----------------------------------------------------------------------
         # ПРОВЕРКИ РЕЗУЛЬТАТА
         # ----------------------------------------------------------------------
         
-        # Проверка 1: слишком длинное расширение
+        # ----------------------------------------------------------------------
+        # ПРОВЕРКА 1: слишком длинное расширение
+        # Если расширенное слово превышает исходное более чем в max_length_ratio раз,
+        # это похоже на ошибку (например, захват целого предложения)
+        # ----------------------------------------------------------------------
         if len(full_word) > len(text) * self.config['max_length_ratio']:
             logger.warning(f"      ❌ слишком длинное: {len(full_word)} > {len(text)} * {self.config['max_length_ratio']}")
-            return text, 'none'
+            return text, 'none', start_pos, end_pos
         
-        # Проверка 2: для расширенных слов доверяем оригинальному тексту
+        # ----------------------------------------------------------------------
+        # ПРОВЕРКА 2: для расширенных слов доверяем оригинальному тексту
+        # Если мы расширили слово, используя оригинальный текст,
+        # доверяем оригиналу, даже если оно не содержит исходный текст модели
+        # ----------------------------------------------------------------------
         if left_expanded or right_expanded:
-            # Мы расширили слово, используя оригинальный текст
-            # Доверяем оригиналу, даже если оно не содержит исходный текст модели
             logger.warning(f"      ✅ слово расширено, доверяем оригиналу")
         else:
             # Слово не расширялось, проверяем подстроку как обычно
             if text not in full_word:
                 logger.warning(f"      ❌ исходный текст не подстрока (без расширения)")
-                return text, 'none'
+                return text, 'none', start_pos, end_pos
         
-        # Проверка 3: минимальное покрытие
+        # ----------------------------------------------------------------------
+        # ПРОВЕРКА 3: минимальное покрытие
+        # Исходный текст должен составлять не менее min_coverage от расширенного
+        # Это защищает от случаев, когда мы добавляем слишком много лишнего
+        # ----------------------------------------------------------------------
         coverage = len(text) / len(full_word) if len(full_word) > 0 else 0
         if coverage < self.config['min_coverage']:
             logger.warning(f"      ❌ покрытие {coverage:.2f} < {self.config['min_coverage']}")
-            return text, 'none'
+            return text, 'none', start_pos, end_pos
         
-        # Проверка 4: заглавные буквы для LOC/PER
+        # ----------------------------------------------------------------------
+        # ПРОВЕРКА 4: заглавные буквы для LOC/PER (пропуская кавычки)
+        # Для имен собственных первая буква должна быть заглавной
+        # Пропускаем кавычки в начале при поиске первой буквы
+        # ----------------------------------------------------------------------
         if (self.config['require_capital'] and entity_type in ['LOC', 'PER'] and left_expanded):
             # Ищем первую букву (пропуская кавычки)
             first_letter = None
@@ -518,21 +580,25 @@ class WordExpander:
             
             if first_letter is None:
                 logger.warning(f"      ❌ в слове нет букв")
-                return text, 'none'
+                return text, 'none', start_pos, end_pos
             
             if not first_letter.isupper():
                 logger.warning(f"      ❌ первая буква '{first_letter}' не заглавная")
-                return text, 'none'
+                return text, 'none', start_pos, end_pos
         
-        # Проверка 5: проверка на слияние
+        # ----------------------------------------------------------------------
+        # ПРОВЕРКА 5: проверка на слияние
+        # Проверяем, не является ли расширение результатом слияния слов
+        # (например, "вМоскве" должно остаться "вМоскве", а не расширяться)
+        # ----------------------------------------------------------------------
         if self.config['enable_merge_check']:
             if self._check_word_merge(original_text, full_word, start_pos, end_pos):
                 logger.warning(f"      ❌ обнаружено слияние слов")
-                return text, 'none'
+                return text, 'none', start_pos, end_pos
         
         logger.warning(f"      ✅ расширение: '{text}' -> '{full_word}'")
-        return full_word, expand_type
-    
+        return full_word, expand_type, word_start, word_end  
+
     def _check_word_merge(self, original_text: str, full_word: str,
                          start_pos: int, end_pos: int) -> bool:
         """
