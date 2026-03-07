@@ -290,18 +290,14 @@ class WriterWorker(StoppableThread):
                 row.append(processed_entity.get('confidence', 0.5))
             
             if self.include_positions:
-                # Для расширенных сущностей позиции могут быть неактуальны
-                if processed_entity.get('expanded'):
-                    row.extend([0, 0])  # заглушка
+                # Берем первую и последнюю позицию
+                if 'positions' in processed_entity and processed_entity['positions']:
+                    first_pos = processed_entity['positions'][0]
+                    last_pos = processed_entity['positions'][-1]
+                    row.append(first_pos.get('start', 0))
+                    row.append(last_pos.get('end', 0))
                 else:
-                    # Берем первую и последнюю позицию
-                    if 'positions' in processed_entity and processed_entity['positions']:
-                        first_pos = processed_entity['positions'][0]
-                        last_pos = processed_entity['positions'][-1]
-                        row.append(first_pos.get('start', 0))
-                        row.append(last_pos.get('end', 0))
-                    else:
-                        row.extend([0, 0])
+                    row.extend([0, 0])
             
             self.buffer.append(row)
         
