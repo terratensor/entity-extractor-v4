@@ -61,7 +61,7 @@ class WordExpander:
     VOWELS = set('аеёиоуыэюя')
     
     # Разделители слов (пробелы и знаки препинания, НО не кавычки!)
-    WORD_BREAKS = set(' .,!?;:()[]{}""\'\n\r\t')
+    WORD_BREAKS = set(' .,!?;:…()[]{}""\'\n\r\t')
     
     # Кавычки (разные типографские варианты)
     OPEN_QUOTES = {'«', '“', '„', '"', "'"}
@@ -69,8 +69,8 @@ class WordExpander:
     ALL_QUOTES = OPEN_QUOTES | CLOSE_QUOTES
     
     # Пунктуация для удаления в начале/конце (кроме кавычек)
-    PUNCTUATION_START = '.,!?;:'
-    PUNCTUATION_END = '.,!?;:'
+    PUNCTUATION_START = '.,!?;:…'
+    PUNCTUATION_END = '.,!?;:…'
     
     def __init__(self, config: Optional[Dict] = None):
         """
@@ -172,6 +172,11 @@ class WordExpander:
                 result_entity['cleaned'] = True
                 self.stats['cleaned'] += 1
         
+        # После всех расширений, перед возвратом
+        logger.warning(f"   📝 ИТОГ: '{entity['text']}' -> '{result_entity['text']}'")
+        if result_entity.get('cleaned'):
+            logger.warning(f"      очищено: да")
+
         return result_entity
     
     def _clean_entity(self, text: str) -> str:
@@ -193,23 +198,63 @@ class WordExpander:
         logger.warning(f"      🧹 финальная очистка: '{text}'")
         
         # ----------------------------------------------------------------------
-        # Правило 1: Удаляем знаки препинания в начале
+        # Правило 1: Циклически удаляем знаки препинания (МНОГОКРАТНО)
         # ----------------------------------------------------------------------
-        text = text.lstrip(self.PUNCTUATION_START)
+        PUNCTUATION = '.,!?;:…'
+        
+        # Первый проход - пока есть что удалять
+        changed = True
+        while changed and text:
+            changed = False
+            old_text = text
+            
+            # Удаляем с начала
+            while text and text[0] in PUNCTUATION:
+                text = text[1:]
+                changed = True
+            
+            # Удаляем с конца
+            while text and text[-1] in PUNCTUATION:
+                text = text[:-1]
+                changed = True
+            
+            if changed:
+                logger.warning(f"         удалены знаки: '{old_text}' -> '{text}'")
+        
         if text != original:
-            logger.warning(f"         удалены знаки в начале: '{original}' -> '{text}'")
+            logger.warning(f"         после удаления знаков: '{original}' -> '{text}'")
             original = text
         
         # ----------------------------------------------------------------------
-        # Правило 2: Удаляем знаки препинания в конце
+        # Правило 2: Trim пробелов
         # ----------------------------------------------------------------------
-        text = text.rstrip(self.PUNCTUATION_END)
+        text = text.strip()
         if text != original:
-            logger.warning(f"         удалены знаки в конце: '{original}' -> '{text}'")
+            logger.warning(f"         после trim: '{original}' -> '{text}'")
             original = text
         
         # ----------------------------------------------------------------------
-        # Правило 3: Удаляем дефисы в начале и конце
+        # Правило 3: Снова циклически удаляем знаки препинания
+        # (потому что после trim могли появиться новые знаки в конце)
+        # ----------------------------------------------------------------------
+        changed = True
+        while changed and text:
+            changed = False
+            old_text = text
+            
+            while text and text[0] in PUNCTUATION:
+                text = text[1:]
+                changed = True
+            
+            while text and text[-1] in PUNCTUATION:
+                text = text[:-1]
+                changed = True
+            
+            if changed:
+                logger.warning(f"         повторное удаление знаков: '{old_text}' -> '{text}'")
+        
+        # ----------------------------------------------------------------------
+        # Правило 4: Удаляем дефисы в начале и конце
         # ----------------------------------------------------------------------
         text = text.lstrip('-')
         if text != original:
@@ -222,45 +267,31 @@ class WordExpander:
             original = text
         
         # ----------------------------------------------------------------------
-        # Правило 4: Удаляем пробелы в начале и конце (trim)
-        # ----------------------------------------------------------------------
-        text = text.strip()
-        if text != original:
-            logger.warning(f"         удалены пробелы: '{original}' -> '{text}'")
-            original = text
-        
-        # ----------------------------------------------------------------------
         # Правило 5: Проверяем парность кавычек
         # ----------------------------------------------------------------------
         has_open = False
         has_close = False
-        open_char = None
-        close_char = None
         
         if text and text[0] in self.OPEN_QUOTES:
             has_open = True
-            open_char = text[0]
-            logger.warning(f"         найдена открывающая кавычка в начале: '{open_char}'")
+            logger.warning(f"         найдена открывающая кавычка в начале: '{text[0]}'")
         
         if text and text[-1] in self.CLOSE_QUOTES:
             has_close = True
-            close_char = text[-1]
-            logger.warning(f"         найдена закрывающая кавычка в конце: '{close_char}'")
+            logger.warning(f"         найдена закрывающая кавычка в конце: '{text[-1]}'")
         
-        # Если есть открывающая, но нет закрывающей - удаляем открывающую
         if has_open and not has_close:
             text = text[1:]
-            logger.warning(f"         удалена открывающая кавычка без пары: '{original}' -> '{text}'")
+            logger.warning(f"         удалена открывающая кавычка без пары")
             original = text
         
-        # Если есть закрывающая, но нет открывающей - удаляем закрывающую
         if has_close and not has_open:
             text = text[:-1]
-            logger.warning(f"         удалена закрывающая кавычка без пары: '{original}' -> '{text}'")
+            logger.warning(f"         удалена закрывающая кавычка без пары")
             original = text
         
         # ----------------------------------------------------------------------
-        # Правило 6: Финальный trim на всякий случай
+        # Правило 6: Финальный trim
         # ----------------------------------------------------------------------
         text = text.strip()
         if text != original:
