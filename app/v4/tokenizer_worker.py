@@ -158,7 +158,6 @@ class TokenizerWorker(StoppableThread):
         text = doc['text']
         
         # Используем return_overflowing_tokens для автоматической разбивки
-        # с перекрытием, если указано
         stride = 0
         if self.config.overlap_ratio > 0:
             stride = int(self.config.max_tokens * self.config.overlap_ratio)
@@ -167,7 +166,7 @@ class TokenizerWorker(StoppableThread):
         inputs = self.tokenizer(
             text,
             return_overflowing_tokens=True,
-            return_offsets_mapping=True,  # <-- ЭТО НОВОЕ
+            return_offsets_mapping=True,
             max_length=self.config.max_tokens,
             stride=stride,
             truncation=True,
@@ -184,34 +183,26 @@ class TokenizerWorker(StoppableThread):
         for i in range(chunk_count):
             input_ids = inputs['input_ids'][i]
             attention_mask = inputs['attention_mask'][i]
-            
-            # === НОВЫЙ КОД: получаем текст ТОЛЬКО для этого чанка ===
             offsets = inputs['offset_mapping'][i]
             
-            # Находим реальные границы в тексте
-            if offsets and len(offsets) > 0:
-                # Пропускаем специальные токены в начале и конце
-                start_pos = None
-                end_pos = None
-                
-                if offsets and len(offsets) > 0:
-                    start_pos = None
-                    end_pos = None
-                    for offset in offsets:
-                        if offset and offset[1] > 0:  # только проверяем, что есть длина
-                            if start_pos is None:
-                                start_pos = offset[0]
-                            end_pos = offset[1]
-                
-                if start_pos is not None and end_pos is not None:
-                    chunk_text = text[start_pos:end_pos]
-                else:
-                    # Запасной вариант: декодируем токены
-                    chunk_text = self.tokenizer.decode(input_ids, skip_special_tokens=True)
+            # Определяем глобальные позиции чанка
+            global_start = None
+            global_end = None
+            
+            for offset in offsets:
+                if offset and offset[1] > 0:  # есть ненулевая длина
+                    if global_start is None:
+                        global_start = offset[0]
+                    global_end = offset[1]
+            
+            # Вырезаем текст чанка
+            if global_start is not None and global_end is not None:
+                chunk_text = text[global_start:global_end]
             else:
                 # Запасной вариант: декодируем токены
                 chunk_text = self.tokenizer.decode(input_ids, skip_special_tokens=True)
-            # === КОНЕЦ НОВОГО КОДА ===
+                global_start = 0
+                global_end = len(chunk_text)
             
             chunks.append({
                 'id': doc_id,
@@ -219,7 +210,9 @@ class TokenizerWorker(StoppableThread):
                 'total_chunks': chunk_count,
                 'input_ids': input_ids,
                 'attention_mask': attention_mask,
-                'text': chunk_text,  # <-- ТЕПЕРЬ ЗДЕСЬ ТОЛЬКО ТЕКСТ ЧАНКА
+                'text': chunk_text,
+                'global_start': global_start,  # позиция в оригинале
+                'global_end': global_end,      # конечная позиция
                 'token_count': len(input_ids)
             })
             

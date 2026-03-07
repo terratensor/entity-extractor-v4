@@ -214,10 +214,10 @@ class GPUWorker(StoppableThread):
         
         batch_start = time.time()
         
-        # --- ИЗМЕНЕНИЕ 1: вместо original_text используем text ---
-        texts = [chunk['text'] for chunk in batch]  # <-- было chunk['original_text']
+        # Подготовка текстов
+        texts = [chunk['text'] for chunk in batch]
         
-        # Используем пайплайн с aggregation_strategy=None (как в v1)
+        # Используем пайплайн с aggregation_strategy=None
         if not hasattr(self, 'ner_pipeline'):
             from transformers import pipeline
             self.ner_pipeline = pipeline(
@@ -243,15 +243,23 @@ class GPUWorker(StoppableThread):
             # Фильтруем по confidence
             token_entities = [t for t in token_entities if t['score'] >= self.min_confidence]
             
-            # --- ИЗМЕНЕНИЕ 2: передаем текст чанка ---
-            entities = self._extract_entities_v1(token_entities, chunk['text'])  # <-- было chunk['original_text']
+            # [ВАЖНО] Корректируем позиции с учетом глобального смещения
+            global_start = chunk.get('global_start', 0)
+            if global_start > 0:
+                for t in token_entities:
+                    t['start'] += global_start
+                    t['end'] += global_start
+            
+            # Извлекаем сущности
+            entities = self._extract_entities_v1(token_entities, chunk['text'])
             
             # Формируем результат
             result = {
                 'id': chunk['id'],
                 'chunk_id': chunk['chunk_id'],
                 'total_chunks': chunk['total_chunks'],
-                'text': chunk['text'],  # <-- ДОБАВИТЬ!
+                'text': chunk['text'],
+                'global_start': global_start,
                 'entities': entities,
                 'stats': {
                     'tokens': len(chunk['input_ids']),
@@ -387,16 +395,15 @@ class GPUWorker(StoppableThread):
             'confidence': round(confidence, 4)
         }
         
-        # [ВАЖНО] Добавляем позиции для каждого токена
-        # Это нужно для расширения слов в WriterWorker
-        if self.include_positions:
+        # [ВАЖНО] Всегда добавляем позиции, если они есть
+        if token_entities and 'start' in token_entities[0]:
             result['positions'] = [
                 {'start': t['start'], 'end': t['end']} 
                 for t in sorted_tokens
             ]
         
         return result
-    
+        
     def _get_entity_type(self, label: str) -> str:
         """Извлекает тип сущности из BIO-тега."""
         if label.startswith(('B-', 'I-')):
