@@ -75,6 +75,8 @@ class WriterWorker(StoppableThread):
         # Для текстов документов (нужно для расширения)
         self.doc_texts = {}
         self.text_cleanup_threshold = 1000
+
+        self.doc_text_parts = {}  # doc_id -> {chunk_id: text}
         
         # Для отслеживания прогресса
         self.last_flush_time = time.time()
@@ -198,22 +200,28 @@ class WriterWorker(StoppableThread):
         chunk_id = result['chunk_id']
         total_chunks = result['total_chunks']
         entities = result.get('entities', [])
-
-        # [НОВОЕ] Сохраняем текст из первого чанка
-        if chunk_id == 0 and 'text' in result:
-            logger.warning(f"🔥 Сохранен текст для doc {doc_id}, длина: {len(result['text'])}")
-            self._store_doc_text(doc_id, result.get('text', ''))
         
-        # Обновляем статистику
-        self.stats['processed_chunks'] += 1
-        self.stats['processed_docs'] = len(set([doc_id]) | {doc_id})  # приблизительно
+        # [НОВОЕ] Сохраняем текст каждого чанка
+        if 'text' in result:
+            if doc_id not in self.doc_text_parts:
+                self.doc_text_parts[doc_id] = {}
+            self.doc_text_parts[doc_id][chunk_id] = result['text']
+            logger.warning(f"🔥 Сохранен чанк {chunk_id}/{total_chunks} для doc {doc_id}, длина: {len(result['text'])}")
+            
+            # Если получили все чанки - собираем полный текст
+            if len(self.doc_text_parts[doc_id]) == total_chunks:
+                # Собираем в порядке чанков
+                full_text = ''
+                for i in range(total_chunks):
+                    if i in self.doc_text_parts[doc_id]:
+                        full_text += self.doc_text_parts[doc_id][i]
+                self._store_doc_text(doc_id, full_text)
+                logger.warning(f"🔥 Собран ПОЛНЫЙ текст для doc {doc_id}, длина: {len(full_text)}")
+                
+                # Очищаем части, они больше не нужны
+                del self.doc_text_parts[doc_id]
         
-        for entity in entities:
-            self.stats['total_entities'] += 1
-            etype = entity.get('type', 'MISC')
-            self.stats['entities_by_type'][etype] += 1
-        
-        # Если документ состоит из одного чанка - сразу записываем
+        # Если документ состоит из одного чанка - сразу готов к записи
         if total_chunks == 1:
             self._write_entities(doc_id, entities)
             self.completed_docs.add(doc_id)
@@ -244,19 +252,19 @@ class WriterWorker(StoppableThread):
     
     def _write_entities(self, doc_id: int, entities: List[Dict]) -> None:
         """
-        Добавляет сущности в буфер для записи.
-        
-        Args:
-            doc_id: ID документа
-            entities: список сущностей
+        Добавляет сущности в буфер для записи с опциональным расширением.
         """
-        # [ОТЛАДКА] Проверяем, что функция вообще вызывается
-        logger.warning(f"🔥 _write_entities вызван для doc {doc_id}, entities: {len(entities)}")
-        logger.warning(f"🔥 enable_expansion={self.enable_expansion}, expander={self.expander is not None}")
-        
-        # Получаем текст документа для расширения
+        # Получаем полный текст документа
         doc_text = self.doc_texts.get(doc_id, "")
-        logger.warning(f"🔥 doc_text длина: {len(doc_text)}")
+        
+        # Если текст не полный, но есть части - пробуем собрать (на всякий случай)
+        if not doc_text and doc_id in self.doc_text_parts:
+            parts = self.doc_text_parts[doc_id]
+            # Проверяем, что у нас есть информация о total_chunks
+            # В реальности это должно быть в pending_docs, но подстрахуемся
+            logger.warning(f"🔥 ВНИМАНИЕ: doc {doc_id} пишется без полного текста!")
+        
+        logger.warning(f"🔥 _write_entities для doc {doc_id}, entities: {len(entities)}, текст длина: {len(doc_text)}")
         
         for i, entity in enumerate(entities):
             logger.warning(f"🔥 entity {i}: type={entity.get('type')}, text='{entity.get('text')}'")
