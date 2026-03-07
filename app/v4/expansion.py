@@ -223,15 +223,8 @@ class WordExpander:
 
     def _clean_entity(self, text: str) -> str:
         """
-        Третий этап: финальная очистка сущности от лишних знаков препинания.
-        Вызывается после всех расширений.
-        
-        Правила:
-        1. Удалить знаки препинания в начале и конце (.,!?;:)
-        2. Удалить дефисы в начале и конце
-        3. Удалить пробелы в начале и конце (trim)
-        4. Для кавычек: если только открывающая или только закрывающая - удалить
-        5. Если есть и открывающая и закрывающая - оставить обе
+        Третий этап: финальная очистка сущности от лишних символов.
+        Удаляются все символы, не являющиеся буквами, цифрами, дефисами или кавычками.
         """
         if not text:
             return text
@@ -241,11 +234,54 @@ class WordExpander:
             logger.warning(f"      🧹 финальная очистка: '{text}'")
         
         # ----------------------------------------------------------------------
-        # Правило 1: Циклически удаляем знаки препинания (МНОГОКРАТНО)
+        # Шаг 0: Нормализация Unicode
         # ----------------------------------------------------------------------
-        PUNCTUATION = '.,!?;:…'
+        import unicodedata
+        text = unicodedata.normalize('NFKC', text)
         
-        # Первый проход - пока есть что удалять
+        # ----------------------------------------------------------------------
+        # Шаг 1: Удаление всех управляющих и служебных символов
+        # ----------------------------------------------------------------------
+        # Категории Unicode:
+        # Lu - буквы заглавные
+        # Ll - буквы строчные
+        # Lt - буквы для заголовков
+        # Lm - буквы-модификаторы
+        # Lo - прочие буквы
+        # Nd - десятичные цифры
+        allowed_categories = {'Lu', 'Ll', 'Lt', 'Lm', 'Lo', 'Nd'}
+        
+        # Разрешенные символы (дефис, кавычки, пробельные)
+        allowed_chars = {'-', '«', '»', '"', "'", ' ', '\t', '\n', '\r', '\xa0'}
+        
+        cleaned = []
+        removed = []
+        for char in text:
+            cat = unicodedata.category(char)
+            if cat in allowed_categories or char in allowed_chars:
+                cleaned.append(char)
+            else:
+                removed.append(f"'{char}' (U+{ord(char):04X})")
+        
+        if removed and self.config.get('verbose', False):
+            logger.warning(f"         удалены символы: {', '.join(removed)}")
+        
+        text = ''.join(cleaned)
+        
+        # ----------------------------------------------------------------------
+        # Шаг 2: Нормализация пробельных символов
+        # ----------------------------------------------------------------------
+        import re
+        # Все виды пробелов -> обычный пробел
+        text = re.sub(r'[\s\xa0]+', ' ', text)
+        
+        # ----------------------------------------------------------------------
+        # Шаг 3: Удаление знаков препинания с концов (циклически)
+        # ----------------------------------------------------------------------
+        # Знаки, которые не могут быть в начале/конце слова
+        # Включаем все виды тире: дефис (-), среднее (–), длинное (—)
+        PUNCTUATION = '.,!?;:…—–'
+        
         changed = True
         while changed and text:
             changed = False
@@ -253,106 +289,71 @@ class WordExpander:
             
             # Удаляем с начала
             while text and text[0] in PUNCTUATION:
+                removed_char = text[0]
                 text = text[1:]
                 changed = True
+                if self.config.get('verbose', False):
+                    logger.warning(f"         удален знак '{removed_char}' в начале")
             
             # Удаляем с конца
             while text and text[-1] in PUNCTUATION:
+                removed_char = text[-1]
                 text = text[:-1]
                 changed = True
-            
-            if changed:
                 if self.config.get('verbose', False):
-                    logger.warning(f"         удалены знаки: '{old_text}' -> '{text}'")
-        
-        if text != original:
-            if self.config.get('verbose', False):
-                logger.warning(f"         после удаления знаков: '{original}' -> '{text}'")
-            original = text
-        
-        # ----------------------------------------------------------------------
-        # Правило 2: Trim пробелов
-        # ----------------------------------------------------------------------
-        text = text.strip()
-        if text != original:
-            if self.config.get('verbose', False):
-                logger.warning(f"         после trim: '{original}' -> '{text}'")
-            original = text
-        
-        # ----------------------------------------------------------------------
-        # Правило 3: Снова циклически удаляем знаки препинания
-        # (потому что после trim могли появиться новые знаки в конце)
-        # ----------------------------------------------------------------------
-        changed = True
-        while changed and text:
-            changed = False
-            old_text = text
+                    logger.warning(f"         удален знак '{removed_char}' в конце")
             
-            while text and text[0] in PUNCTUATION:
-                text = text[1:]
-                changed = True
-            
-            while text and text[-1] in PUNCTUATION:
-                text = text[:-1]
-                changed = True
-            
-            if changed:
-                if self.config.get('verbose', False):
-                    logger.warning(f"         повторное удаление знаков: '{old_text}' -> '{text}'")
+            if changed and self.config.get('verbose', False):
+                logger.warning(f"         после удаления знаков: '{old_text}' -> '{text}'")
         
         # ----------------------------------------------------------------------
-        # Правило 4: Удаляем дефисы в начале и конце
+        # Шаг 4: Удаляем дефисы в начале и конце (на всякий случай)
         # ----------------------------------------------------------------------
         text = text.lstrip('-')
-        if text != original:
-            if self.config.get('verbose', False):
-                logger.warning(f"         удалены дефисы в начале: '{original}' -> '{text}'")
-            original = text
-        
         text = text.rstrip('-')
-        if text != original:
-            if self.config.get('verbose', False):
-                logger.warning(f"         удалены дефисы в конце: '{original}' -> '{text}'")
-            original = text
         
         # ----------------------------------------------------------------------
-        # Правило 5: Проверяем парность кавычек
+        # Шаг 5: Удаляем пробелы и схлопываем множественные
         # ----------------------------------------------------------------------
-        has_open = False
-        has_close = False
+        text = ' '.join(text.split())
         
+        # ----------------------------------------------------------------------
+        # Шаг 6: Проверяем парность кавычек
+        # ----------------------------------------------------------------------
         if text and text[0] in self.OPEN_QUOTES:
-            has_open = True
-            if self.config.get('verbose', False):
-                logger.warning(f"         найдена открывающая кавычка в начале: '{text[0]}'")
+            # Есть открывающая кавычка в начале
+            has_close = False
+            for i in range(1, len(text)):
+                if text[i] in self.CLOSE_QUOTES:
+                    has_close = True
+                    break
+            if not has_close:
+                if self.config.get('verbose', False):
+                    logger.warning(f"         удалена открывающая кавычка без пары")
+                text = text[1:]
         
         if text and text[-1] in self.CLOSE_QUOTES:
-            has_close = True
-            if self.config.get('verbose', False):
-                logger.warning(f"         найдена закрывающая кавычка в конце: '{text[-1]}'")
-        
-        if has_open and not has_close:
-            text = text[1:]
-            if self.config.get('verbose', False):
-                logger.warning(f"         удалена открывающая кавычка без пары")
-            original = text
-        
-        if has_close and not has_open:
-            text = text[:-1]
-            if self.config.get('verbose', False):
-                logger.warning(f"         удалена закрывающая кавычка без пары")
-            original = text
+            # Есть закрывающая кавычка в конце
+            has_open = False
+            for i in range(len(text)-2, -1, -1):
+                if text[i] in self.OPEN_QUOTES:
+                    has_open = True
+                    break
+            if not has_open:
+                if self.config.get('verbose', False):
+                    logger.warning(f"         удалена закрывающая кавычка без пары")
+                text = text[:-1]
         
         # ----------------------------------------------------------------------
-        # Правило 6: Финальный trim
+        # Шаг 7: Финальный trim
         # ----------------------------------------------------------------------
         text = text.strip()
-        if text != original:
-            if self.config.get('verbose', False):
-                logger.warning(f"         финальный trim: '{original}' -> '{text}'")
+        
+        if text != original and self.config.get('verbose', False):
+            logger.warning(f"      🧹 итог очистки: '{original}' -> '{text}'")
         
         return text
-    
+        
     def _should_expand(self, text: str, start_pos: int, end_pos: int,
                       original_text: str, entity_type: str) -> tuple:
         """
@@ -362,6 +363,11 @@ class WordExpander:
         Returns:
             (bool, str): (нужно ли расширять, причина отказа)
         """
+        # Нормализуем текст для проверки
+        import unicodedata
+        text_norm = unicodedata.normalize('NFKC', text)
+        original_text_norm = unicodedata.normalize('NFKC', original_text)
+
         if self.config.get('verbose', False):
             logger.warning(f"   _should_expand проверка для '{text}':")
             logger.warning(f"      start_pos={start_pos}, end_pos={end_pos}")
