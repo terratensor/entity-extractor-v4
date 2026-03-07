@@ -40,7 +40,13 @@ class WordExpander:
         'enable_merge_check': True,
         
         # Максимальное соотношение длин (расширенное / исходное)
-        'max_length_ratio': 3.0
+        'max_length_ratio': 5.0,
+        
+        # Типы сущностей для расширения
+        'expand_entity_types': ['LOC', 'PER', 'ORG'],
+        
+        # Включить финальную очистку
+        'enable_final_cleaning': True
     }
     
     # Стоп-слова (предлоги, союзы, частицы)
@@ -54,11 +60,17 @@ class WordExpander:
     # Гласные для проверки слияния
     VOWELS = set('аеёиоуыэюя')
     
-    # Разделители слов
-    WORD_BREAKS = set(' .,!?;:()[]{}""\'\n\r\t')  # убрали « и » из разделителей
-
-    # Отдельно определим парные кавычки
-    QUOTE_MARKS = {'«', '»', '"', "'", '“', '”', '„', '‟'}
+    # Разделители слов (пробелы и знаки препинания, НО не кавычки!)
+    WORD_BREAKS = set(' .,!?;:()[]{}""\'\n\r\t')
+    
+    # Кавычки (разные типографские варианты)
+    OPEN_QUOTES = {'«', '“', '„', '"', "'"}
+    CLOSE_QUOTES = {'»', '”', '‟', '"', "'"}
+    ALL_QUOTES = OPEN_QUOTES | CLOSE_QUOTES
+    
+    # Пунктуация для удаления в начале/конце (кроме кавычек)
+    PUNCTUATION_START = '.,!?;:'
+    PUNCTUATION_END = '.,!?;:'
     
     def __init__(self, config: Optional[Dict] = None):
         """
@@ -79,7 +91,8 @@ class WordExpander:
             'rejected_capital': 0,
             'rejected_merge': 0,
             'rejected_coverage': 0,
-            'rejected_length': 0
+            'rejected_length': 0,
+            'cleaned': 0
         }
         
         logger.info(f"🤖 WordExpander инициализирован с параметрами:")
@@ -88,7 +101,7 @@ class WordExpander:
     
     def expand_entity(self, entity: Dict, original_text: str) -> Dict:
         """
-        Расширяет одну сущность, если это необходимо.
+        Расширяет одну сущность, если это необходимо, затем очищает.
         
         Args:
             entity: словарь сущности с полями text, type, confidence, positions
@@ -96,8 +109,8 @@ class WordExpander:
             
         Returns:
             Dict: сущность с возможным расширенным текстом
-        """        
-        # Используем список из конфига
+        """
+        # Проверяем, нужно ли расширять этот тип сущности
         expand_types = self.config.get('expand_entity_types', ['LOC', 'PER'])
         if entity['type'] not in expand_types:
             return entity
@@ -114,9 +127,9 @@ class WordExpander:
         start_pos = first_pos['start']
         end_pos = last_pos['end']
         
-        # [ОТЛАДКА] Печатаем информацию о сущности
+        # Отладка
         logger.warning(f"🔍 РАСШИРЕНИЕ: '{entity['text']}' ({entity['type']}) "
-                    f"позиции: {start_pos}-{end_pos}")
+                      f"позиции: {start_pos}-{end_pos}")
         logger.warning(f"   Текст вокруг: '{original_text[max(0, start_pos-20):min(len(original_text), end_pos+20)]}'")
 
         # Проверяем, нужно ли расширять
@@ -126,38 +139,115 @@ class WordExpander:
 
         logger.warning(f"   _should_expand: {should}, причина: {reason}")
         
-        if not should:
-            self.stats['rejected'] += 1
-            if reason:
-                self.stats[f'rejected_{reason}'] += 1
-            return entity
+        result_entity = entity.copy()
         
-        # Расширяем
-        expanded, expand_type = self._expand_to_full_word(
-            entity['text'], start_pos, end_pos, original_text, entity['type']
-        )
-        
-        if expanded != entity['text']:
-            # Обновляем статистику по типу расширения
-            if expand_type == 'left':
-                self.stats['expanded_left'] += 1
-            elif expand_type == 'right':
-                self.stats['expanded_right'] += 1
-            elif expand_type == 'both':
-                self.stats['expanded_both'] += 1
+        if should:
+            # Расширяем
+            expanded, expand_type = self._expand_to_full_word(
+                entity['text'], start_pos, end_pos, original_text, entity['type']
+            )
             
-            # Создаем копию с расширенным текстом
-            result = entity.copy()
-            result['text'] = expanded
-            result['expanded'] = True
-            result['expansion_type'] = expand_type
-            result['original_text'] = entity['text']
-            return result
+            if expanded != entity['text']:
+                # Обновляем статистику по типу расширения
+                if expand_type == 'left':
+                    self.stats['expanded_left'] += 1
+                elif expand_type == 'right':
+                    self.stats['expanded_right'] += 1
+                elif expand_type == 'both':
+                    self.stats['expanded_both'] += 1
+                
+                result_entity['text'] = expanded
+                result_entity['expanded'] = True
+                result_entity['expansion_type'] = expand_type
+                result_entity['original_text'] = entity['text']
         
-        return entity
+        # ----------------------------------------------------------------------
+        # ТРЕТИЙ ЭТАП: финальная очистка результата
+        # ----------------------------------------------------------------------
+        if self.config.get('enable_final_cleaning', True):
+            cleaned_text = self._clean_entity(result_entity['text'])
+            if cleaned_text != result_entity['text']:
+                logger.warning(f"   🧹 финальная очистка: '{result_entity['text']}' -> '{cleaned_text}'")
+                result_entity['text'] = cleaned_text
+                result_entity['cleaned'] = True
+                self.stats['cleaned'] += 1
+        
+        return result_entity
+    
+    def _clean_entity(self, text: str) -> str:
+        """
+        Третий этап: финальная очистка сущности от лишних знаков препинания.
+        Вызывается после всех расширений.
+        
+        Правила:
+        1. Удалить знаки препинания в начале и конце (.,!?;:)
+        2. Для кавычек: если только открывающая или только закрывающая - удалить
+        3. Если есть и открывающая и закрывающая - оставить обе
+        """
+        if not text:
+            return text
+        
+        original = text
+        logger.warning(f"      🧹 финальная очистка: '{text}'")
+        
+        # ----------------------------------------------------------------------
+        # Правило 1: Удаляем знаки препинания в начале
+        # ----------------------------------------------------------------------
+        text = text.lstrip(self.PUNCTUATION_START)
+        if text != original:
+            logger.warning(f"         удалены знаки в начале: '{original}' -> '{text}'")
+            original = text
+        
+        # ----------------------------------------------------------------------
+        # Правило 2: Удаляем знаки препинания в конце
+        # ----------------------------------------------------------------------
+        text = text.rstrip(self.PUNCTUATION_END)
+        if text != original:
+            logger.warning(f"         удалены знаки в конце: '{original}' -> '{text}'")
+            original = text
+        
+        # ----------------------------------------------------------------------
+        # Правило 3: Проверяем парность кавычек
+        # ----------------------------------------------------------------------
+        # Проверяем первый символ
+        has_open = False
+        has_close = False
+        open_char = None
+        close_char = None
+        
+        if text and text[0] in self.OPEN_QUOTES:
+            has_open = True
+            open_char = text[0]
+            logger.warning(f"         найдена открывающая кавычка в начале: '{open_char}'")
+        
+        if text and text[-1] in self.CLOSE_QUOTES:
+            has_close = True
+            close_char = text[-1]
+            logger.warning(f"         найдена закрывающая кавычка в конце: '{close_char}'")
+        
+        # Если есть открывающая, но нет закрывающей - удаляем открывающую
+        if has_open and not has_close:
+            text = text[1:]
+            logger.warning(f"         удалена открывающая кавычка без пары: '{original}' -> '{text}'")
+            original = text
+        
+        # Если есть закрывающая, но нет открывающей - удаляем закрывающую
+        if has_close and not has_open:
+            text = text[:-1]
+            logger.warning(f"         удалена закрывающая кавычка без пары: '{original}' -> '{text}'")
+            original = text
+        
+        # ----------------------------------------------------------------------
+        # Правило 4: Дополнительная проверка - нет ли точки в начале после всех чисток
+        # ----------------------------------------------------------------------
+        if text and text[0] in self.PUNCTUATION_START:
+            text = text.lstrip(self.PUNCTUATION_START)
+            logger.warning(f"         повторная очистка начала: '{original}' -> '{text}'")
+        
+        return text
     
     def _should_expand(self, text: str, start_pos: int, end_pos: int,
-                    original_text: str, entity_type: str) -> tuple:
+                      original_text: str, entity_type: str) -> tuple:
         """
         Проверяет, нужно ли расширять сущность (в обе стороны).
         Каждая проверка отдельно и четко прокомментирована.
@@ -195,7 +285,7 @@ class WordExpander:
             logger.warning(f"      символ слева: '{prev_char}' (код {ord(prev_char)})")
             
             # Условие 3.1: Слева буква или кавычка (не разделитель)
-            if prev_char.isalpha() or prev_char in self.QUOTE_MARKS:
+            if prev_char.isalpha() or prev_char in self.ALL_QUOTES:
                 # Условие 3.2: Это начало слова (перед ним разделитель или начало текста)
                 if start_pos - 1 == 0 or original_text[start_pos - 2] in self.WORD_BREAKS:
                     can_expand_left = True
@@ -218,7 +308,7 @@ class WordExpander:
             logger.warning(f"      символ справа: '{next_char}' (код {ord(next_char)})")
             
             # Условие 4.1: Справа буква или кавычка (не разделитель)
-            if next_char.isalpha() or next_char in self.QUOTE_MARKS:
+            if next_char.isalpha() or next_char in self.ALL_QUOTES:
                 can_expand_right = True
                 logger.warning(f"      ✅ можно расширять ВПРАВО")
             else:
@@ -248,22 +338,16 @@ class WordExpander:
         else:
             logger.warning(f"      ❌ нет расширения: влево={left_reason}, вправо={right_reason}")
             return False, None
-        
+    
     def _expand_to_full_word(self, text: str, start_pos: int, end_pos: int,
                             original_text: str, entity_type: str) -> tuple:
         """
         Расширяет до полного слова в ОБЕ стороны.
-        Левое и правое расширение работают независимо.
         """
         logger.warning(f"      🔧 _expand_to_full_word для '{text}' ({start_pos}-{end_pos})")
         
         max_left = self.config['max_search_left']
         max_right = self.config['max_search_right']
-        
-        # Кавычки, которые нужно сохранять
-        QUOTE_MARKS = {'«', '»', '"', "'", '“', '”', '„', '‟'}
-        # Пунктуация в конце слова (кроме кавычек)
-        PUNCTUATION_ENDS = '.,!?;:()[]{}'
         
         # ----------------------------------------------------------------------
         # РАСШИРЕНИЕ ВЛЕВО
@@ -278,7 +362,7 @@ class WordExpander:
                 prev_char = original_text[word_start - 1]
                 logger.warning(f"        символ {word_start-1}: '{prev_char}'")
                 
-                if prev_char in self.WORD_BREAKS and prev_char not in QUOTE_MARKS:
+                if prev_char in self.WORD_BREAKS and prev_char not in self.ALL_QUOTES:
                     logger.warning(f"          стоп - разделитель")
                     break
                 
@@ -300,7 +384,7 @@ class WordExpander:
                 next_char = original_text[word_end]
                 logger.warning(f"        символ {word_end}: '{next_char}'")
                 
-                if next_char in self.WORD_BREAKS and next_char not in QUOTE_MARKS:
+                if next_char in self.WORD_BREAKS and next_char not in self.ALL_QUOTES:
                     logger.warning(f"          стоп - разделитель")
                     break
                 
@@ -379,16 +463,65 @@ class WordExpander:
                 logger.warning(f"      ✅ первая буква '{first_letter}' заглавная")
         
         # ----------------------------------------------------------------------
-        # ОЧИСТКА: убираем пунктуацию в конце, НО НЕ КАВЫЧКИ
+        # ПРОВЕРКА 5: проверка на слияние
         # ----------------------------------------------------------------------
-        full_word_clean = full_word.rstrip(PUNCTUATION_ENDS)
-        if full_word_clean != full_word:
-            logger.warning(f"      очистка пунктуации: '{full_word}' -> '{full_word_clean}'")
-            full_word = full_word_clean
+        if self.config['enable_merge_check']:
+            if self._check_word_merge(original_text, full_word, start_pos, end_pos):
+                logger.warning(f"      ❌ обнаружено слияние слов")
+                return text, 'none'
         
         logger.warning(f"      ✅ расширение: '{text}' -> '{full_word}'")
         return full_word, expand_type
+    
+    def _check_word_merge(self, original_text: str, full_word: str,
+                         start_pos: int, end_pos: int) -> bool:
+        """
+        Проверяет, не является ли расширение результатом слияния слов.
+        """
+        # Если внутри полного слова есть пробелы - это несколько слов
+        if ' ' in full_word and '-' not in full_word:
+            original_part = original_text[start_pos:end_pos]
+            if len(original_part) < len(full_word) * 0.3:
+                return True
         
+        # Проверка на типичные паттерны слияния
+        if end_pos < len(original_text):
+            next_char = original_text[end_pos]
+            last_char = original_text[end_pos - 1] if end_pos > 0 else ''
+            
+            # Признаки возможного слияния: согласная + гласная на стыке
+            if (last_char.isalpha() and next_char.isalpha() and
+                last_char.lower() not in self.VOWELS and
+                next_char.lower() in self.VOWELS):
+                
+                # Дополнительные проверки:
+                # 1. Проверяем, что после гласной есть буквы (это часть слова, а не окончание)
+                if end_pos + 1 < len(original_text):
+                    next_next = original_text[end_pos + 1]
+                    if next_next.isalpha():
+                        return False
+                
+                # 2. Проверяем, не является ли это типичным окончанием
+                common_endings = {'а', 'я', 'ы', 'и', 'е', 'ё', 'ю', 'й'}
+                if next_char.lower() in common_endings:
+                    if end_pos + 1 >= len(original_text) or original_text[end_pos + 1] in self.WORD_BREAKS:
+                        return False
+                
+                # 3. Проверяем длину исходного слова
+                if len(full_word) < 3:
+                    if full_word.lower() in self.STOP_WORDS:
+                        return True
+                
+                return True
+        
+        return False
+    
+    def _get_entity_type(self, label: str) -> str:
+        """Извлекает тип сущности из BIO-тега."""
+        if label.startswith(('B-', 'I-')):
+            return label[2:]
+        return label
+    
     def get_stats(self) -> Dict:
         """Возвращает статистику расширений."""
         stats = self.stats.copy()
