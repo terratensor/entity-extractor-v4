@@ -34,7 +34,7 @@ CLOSE_BRACKETS: Set[str] = {')', ']', '}', '>'}
 ALL_BRACKETS: Set[str] = OPEN_BRACKETS | CLOSE_BRACKETS
 
 # Пунктуация для удаления в начале/конце (включая все виды тире)
-PUNCTUATION: str = '.,!?;:…—–-•=|\\/*$%^&@~<>'
+PUNCTUATION: str = '.,!?;:…—–-•=+@#_|\\/*$%^&@~<>'
 PUNCTUATION_START: str = PUNCTUATION
 PUNCTUATION_END: str = PUNCTUATION + '№'
 
