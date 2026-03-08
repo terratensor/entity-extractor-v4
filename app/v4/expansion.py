@@ -76,9 +76,9 @@ class WordExpander:
     ALL_BRACKETS = OPEN_BRACKETS | CLOSE_BRACKETS
     
     # Пунктуация для удаления в начале/конце (включая все виды тире)
-    PUNCTUATION = '.,!?;:…—–' # TODO проверить и добавить дефис -
+    PUNCTUATION = '.,!?;:…—–-•=|\\/*$%^&@~<>' # TODO проверить и добавить дефис -
     PUNCTUATION_START = PUNCTUATION  # для lstrip
-    PUNCTUATION_END = PUNCTUATION    # для rstrip
+    PUNCTUATION_END = PUNCTUATION + '№'   # для rstrip
     
     def __init__(self, config: Optional[Dict] = None):
         """
@@ -300,12 +300,14 @@ class WordExpander:
         
         if self.config.get('verbose', False) and '@DOT@' in text:
             logger.warning(f"         защищены точки: {text.count('@DOT@')} шт.")
-        
+                
         # ----------------------------------------------------------------------
-        # Шаг 4: Удаление знаков препинания и скобок с начала
+        # Шаг 4: Удаление знаков препинания и скобок с начала и конца
         # ----------------------------------------------------------------------
-        REMOVE_START = set(self.PUNCTUATION) | self.ALL_BRACKETS | {'"', "'", '«', '»', '“', '”', '„', '‟'}
+        # REMOVE_START = set(self.PUNCTUATION) | self.ALL_BRACKETS | {'"', "'", '«', '»', '“', '”', '„', '‟'}
+        REMOVE_START = set(self.PUNCTUATION) | self.ALL_BRACKETS
 
+        # Очистка начала
         if text:
             # Циклически удаляем все нежелательные символы в начале
             start_removed = 0
@@ -325,6 +327,34 @@ class WordExpander:
                 text = text[1:]
                 if self.config.get('verbose', False):
                     logger.warning(f"         удален пробел в начале: '{old_text}' -> '{text}'")
+
+        # Очистка конца
+        if text:
+            end_removed = 0
+            changed = True
+            while changed and text:
+                changed = False
+                old_text = text
+                
+                # Сначала пробелы
+                while text and text[-1] == ' ':
+                    text = text[:-1]
+                    changed = True
+                    end_removed += 1
+                    if self.config.get('verbose', False) and end_removed <= 5:
+                        logger.warning(f"         удален пробел в конце")
+                
+                # Потом знаки препинания
+                while text and text[-1] in self.PUNCTUATION_END:
+                    removed_char = text[-1]
+                    text = text[:-1]
+                    changed = True
+                    end_removed += 1
+                    if self.config.get('verbose', False) and end_removed <= 5:
+                        logger.warning(f"         удален знак '{removed_char}' в конце")
+            
+            if end_removed > 0 and self.config.get('verbose', False):
+                logger.warning(f"         удалено {end_removed} символов в конце")
         
         # ----------------------------------------------------------------------
         # Шаг 5: Удаляем лишние дефисы в начале и конце
@@ -594,23 +624,37 @@ class WordExpander:
         full_word = original_text[word_start:word_end]
         
         # ----------------------------------------------------------------------
-        # ПРОВЕРКА НАЛИЧИЯ РАЗДЕЛИТЕЛЕЙ В ДОБАВЛЕННЫХ ЧАСТЯХ
-        # Проверяем только те символы, которые были добавлены при расширении,
-        # а не весь диапазон между исходными позициями.
-        # Это важно, потому что внутри исходного слова могут быть знаки препинания,
-        # которые относятся к контексту, а не к самому слову (например, запятая после слова).
+        # ПРОВЕРКА НАЛИЧИЯ РАЗДЕЛИТЕЛЕЙ
         # ----------------------------------------------------------------------
         if left_expanded or right_expanded:
-            if self.config.get('verbose', False):
-                logger.warning(f"      проверка наличия разделителей в добавленных частях:")
             
             # ----------------------------------------------------------------------
-            # ПРОВЕРКА ЛЕВОЙ ДОБАВЛЕННОЙ ЧАСТИ
-            # Если расширялись влево, проверяем символы от нового начала (word_start)
-            # до исходного начала (start_pos). В этой части не должно быть разделителей,
-            # иначе это разные слова.
+            # ПРОВЕРКА 1: разделители ВНУТРИ исходного диапазона
+            # Проверяем символы между start_pos и end_pos.
+            # Если там есть разделители (например, многоточие), значит исходная
+            # сущность уже содержит разрыв и расширение отменяется.
+            # ----------------------------------------------------------------------
+            if self.config.get('verbose', False):
+                logger.warning(f"      проверка разделителей внутри исходного диапазона ({start_pos}-{end_pos}):")
+            
+            for pos in range(start_pos, end_pos):
+                if pos >= len(original_text):
+                    break
+                char = original_text[pos]
+                if char in self.WORD_BREAKS and char not in self.ALL_QUOTES and char != '-':
+                    if self.config.get('verbose', False):
+                        logger.warning(f"         найден разделитель '{char}' на позиции {pos} - отмена расширения")
+                    return text, 'none', start_pos, end_pos
+            
+            # ----------------------------------------------------------------------
+            # ПРОВЕРКА 2: разделители в ЛЕВОЙ добавленной части
+            # Проверяем символы от нового начала (word_start) до исходного (start_pos).
+            # Если там есть разделители, значит слева другое слово.
             # ----------------------------------------------------------------------
             if left_expanded:
+                if self.config.get('verbose', False):
+                    logger.warning(f"      проверка левой добавленной части ({word_start}-{start_pos}):")
+                
                 for pos in range(word_start, start_pos):
                     if pos >= len(original_text):
                         break
@@ -621,12 +665,14 @@ class WordExpander:
                         return text, 'none', start_pos, end_pos
             
             # ----------------------------------------------------------------------
-            # ПРОВЕРКА ПРАВОЙ ДОБАВЛЕННОЙ ЧАСТИ
-            # Если расширялись вправо, проверяем символы от исходного конца (end_pos)
-            # до нового конца (word_end). В этой части не должно быть разделителей,
-            # иначе это разные слова.
+            # ПРОВЕРКА 3: разделители в ПРАВОЙ добавленной части
+            # Проверяем символы от исходного конца (end_pos) до нового (word_end).
+            # Если там есть разделители, значит справа другое слово.
             # ----------------------------------------------------------------------
             if right_expanded:
+                if self.config.get('verbose', False):
+                    logger.warning(f"      проверка правой добавленной части ({end_pos}-{word_end}):")
+                
                 for pos in range(end_pos, word_end):
                     if pos >= len(original_text):
                         break

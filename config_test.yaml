@@ -79,4 +79,4 @@ logging:
   level: INFO
   file: ./batch_test.log
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  verbose: false  # отключаем подробную отладку для скорости
+  verbose: true  # отключаем подробную отладку для скорости
