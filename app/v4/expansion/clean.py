@@ -15,7 +15,12 @@ from . import constants
 logger = logging.getLogger(__name__)
 
 
-def clean_entity(text: str, config: dict, verbose: bool = False) -> str:
+def clean_entity(
+    text: str, 
+    entity_type: str,
+    config: dict, 
+    verbose: bool = False
+) -> str:
     """
     Третий этап: финальная очистка сущности.
     
@@ -186,11 +191,19 @@ def clean_entity(text: str, config: dict, verbose: bool = False) -> str:
                             logger.warning(f"         оставлена только одна пара {open_char}{close_char}")
                         text = new_text
     
- # ----------------------------------------------------------------------
-    # Шаг 8: Очистка начала от сокращений (опционально)
+    # ----------------------------------------------------------------------
+    # Шаг 8: Очистка начала от сокращений (только для LOC)
     # ----------------------------------------------------------------------
     if config.get('enable_beginning_cleaning', False):
-        text = clean_beginning(text, constants.ABBREVIATIONS, constants.PUNCTUATION, verbose)
+        # Передаём entity_type в функцию очистки
+        text = clean_beginning(
+            text, 
+            entity_type,
+            constants.ABBREVIATIONS, 
+            constants.PUNCTUATION, 
+            config,
+            verbose
+        )
     
     # ----------------------------------------------------------------------
     # Шаг 9: Финальный trim
@@ -319,15 +332,33 @@ def strip_punctuation(text: str, punctuation: str, verbose: bool = False) -> str
     return text
 
 
-def clean_beginning(text: str, abbreviations: list, punctuation: str, verbose: bool = False) -> str:
+def clean_beginning(
+    text: str, 
+    entity_type: str,
+    abbreviations: list, 
+    punctuation: str, 
+    config: dict,
+    verbose: bool = False
+) -> str:
     """
-    Комплексная очистка начала строки:
-    1. Удаляем сокращения
-    2. Trim пробелов
-    3. Рекурсивно удаляем пунктуацию
-    4. Повторяем пока есть изменения
+    Комплексная очистка начала строки (только для LOC).
+    
+    Args:
+        text: исходная строка
+        entity_type: тип сущности (LOC, PER, ORG)
+        abbreviations: список сокращений для удаления
+        punctuation: строка со знаками пунктуации
+        config: конфиг с параметрами
+        verbose: флаг отладки
+    
+    Returns:
+        str: очищенная строка
     """
     if not text:
+        return text
+    
+    # Очищаем только для LOC
+    if entity_type != 'LOC':
         return text
     
     original = text

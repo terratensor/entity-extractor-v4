@@ -156,7 +156,12 @@ class WordExpander:
         # Удаляем лишние знаки препинания, проверяем парность кавычек
         # ----------------------------------------------------------------------
         if self.config.get('enable_final_cleaning', True):
-            cleaned_text = clean.clean_entity(result_entity['text'], self.config, verbose)
+            cleaned_text = clean.clean_entity(
+                result_entity['text'], 
+                entity['type'],  # передаём тип
+                self.config, 
+                verbose
+            )
             if cleaned_text != result_entity['text']:
                 if verbose:
                     logger.warning(f"   🧹 финальная очистка: '{result_entity['text']}' -> '{cleaned_text}'")
