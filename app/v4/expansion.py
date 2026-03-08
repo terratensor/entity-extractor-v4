@@ -67,10 +67,18 @@ class WordExpander:
     OPEN_QUOTES = {'«', '“', '„', '"', "'"}
     CLOSE_QUOTES = {'»', '”', '‟', '"', "'"}
     ALL_QUOTES = OPEN_QUOTES | CLOSE_QUOTES
+
+    # Открывающие скобки
+    OPEN_BRACKETS = {'(', '[', '{'}
+    # Закрывающие скобки
+    CLOSE_BRACKETS = {')', ']', '}'}
+    # Все скобки для проверки
+    ALL_BRACKETS = OPEN_BRACKETS | CLOSE_BRACKETS
     
-    # Пунктуация для удаления в начале/конце (кроме кавычек)
-    PUNCTUATION_START = '.,!?;:…'
-    PUNCTUATION_END = '.,!?;:…'
+    # Пунктуация для удаления в начале/конце (включая все виды тире)
+    PUNCTUATION = '.,!?;:…—–' # TODO проверить и добавить дефис -
+    PUNCTUATION_START = PUNCTUATION  # для lstrip
+    PUNCTUATION_END = PUNCTUATION    # для rstrip
     
     def __init__(self, config: Optional[Dict] = None):
         """
@@ -228,9 +236,10 @@ class WordExpander:
         Правила:
         1. Сохраняем точки в инициалах и сокращениях (Г.В., г., ул., д.)
         2. Сохраняем дефисы в составных словах (пр-т, Ростов-на-Дону)
-        3. Сохраняем парные кавычки
-        4. Удаляем одиночные кавычки и знаки препинания с концов
-        5. Нормализуем пробелы
+        3. Сохраняем парные кавычки, удаляем одиночные и множественные
+        4. Удаляем все знаки препинания в начале строки (точки, запятые и т.д.)
+        5. Удаляем пробелы в начале после удаления знаков
+        6. Нормализуем пробелы
         """
         if not text:
             return text
@@ -250,12 +259,6 @@ class WordExpander:
         # ----------------------------------------------------------------------
         # Шаг 1: Удаление служебных символов (кроме пробелов)
         # ----------------------------------------------------------------------
-        # Категории для удаления:
-        # Cc - control
-        # Cf - format
-        # Cn - unassigned
-        # Co - private use
-        # Cs - surrogate
         control_cats = {'Cc', 'Cf', 'Cn', 'Co', 'Cs'}
         
         cleaned = []
@@ -280,12 +283,6 @@ class WordExpander:
         # ----------------------------------------------------------------------
         # Шаг 3: Сохраняем точки в инициалах и сокращениях
         # ----------------------------------------------------------------------
-        # Паттерны для сохранения:
-        # - Инициалы: Г.В. Носовский, А.Т. Фоменко
-        # - Сокращения: г., ул., д., пр-т, т.д., т.п.
-        
-        # Временно заменяем точки на маркер, если они являются частью слова
-        
         # 3.1 Инициалы (Г.В., А.Т., Т.П.)
         text = re.sub(r'([А-ЯA-Z])\.([А-ЯA-Z])(?=\.|\s|$)', r'\1@DOT@\2', text)
         
@@ -305,31 +302,29 @@ class WordExpander:
             logger.warning(f"         защищены точки: {text.count('@DOT@')} шт.")
         
         # ----------------------------------------------------------------------
-        # Шаг 4: Удаление знаков препинания с концов (кроме защищенных)
+        # Шаг 4: Удаление знаков препинания и скобок с начала
         # ----------------------------------------------------------------------
-        # Знаки, которые не могут быть в начале/конце слова
-        PUNCTUATION = ',!?;:…—–'
-        
-        changed = True
-        while changed and text:
-            changed = False
-            old_text = text
-            
-            # Удаляем с начала
-            while text and text[0] in PUNCTUATION:
-                removed_char = text[0]
+        REMOVE_START = set(self.PUNCTUATION) | self.ALL_BRACKETS | {'"', "'", '«', '»', '“', '”', '„', '‟'}
+
+        if text:
+            # Циклически удаляем все нежелательные символы в начале
+            start_removed = 0
+            while text and text[0] in REMOVE_START:
+                old_text = text
                 text = text[1:]
-                changed = True
-                if self.config.get('verbose', False):
-                    logger.warning(f"         удален знак '{removed_char}' в начале")
+                start_removed += 1
+                if self.config.get('verbose', False) and start_removed <= 5:
+                    logger.warning(f"         удален символ '{old_text[0]}' в начале")
             
-            # Удаляем с конца
-            while text and text[-1] in PUNCTUATION:
-                removed_char = text[-1]
-                text = text[:-1]
-                changed = True
+            if start_removed > 0 and self.config.get('verbose', False):
+                logger.warning(f"         удалено {start_removed} символов в начале")
+            
+            # Удаляем пробелы после удаления символов
+            while text and text[0] == ' ':
+                old_text = text
+                text = text[1:]
                 if self.config.get('verbose', False):
-                    logger.warning(f"         удален знак '{removed_char}' в конце")
+                    logger.warning(f"         удален пробел в начале: '{old_text}' -> '{text}'")
         
         # ----------------------------------------------------------------------
         # Шаг 5: Удаляем лишние дефисы в начале и конце
@@ -343,48 +338,59 @@ class WordExpander:
         text = text.replace('@DOT@', '.')
         
         # ----------------------------------------------------------------------
-        # Шаг 7: Работа с кавычками
+        # Шаг 7: Работа с парными символами (кавычки и скобки)
         # ----------------------------------------------------------------------
-        # Анализируем кавычки в контексте
-        quote_pairs = [
+        pairs = [
+            # Кавычки
             ('«', '»'),
             ('"', '"'),
             ("'", "'"),
             ('“', '”'),
-            ('„', '‟')
+            ('„', '‟'),
+            # Скобки
+            ('(', ')'),
+            ('[', ']'),
+            ('{', '}')
         ]
         
-        for open_q, close_q in quote_pairs:
-            # Если есть открывающая, но нет закрывающей - удаляем все вхождения
-            if open_q in text and close_q not in text:
-                count = text.count(open_q)
-                text = text.replace(open_q, '')
-                if self.config.get('verbose', False) and count:
-                    logger.warning(f"         удалены {count} открывающих кавычек '{open_q}' без пары")
+        for open_char, close_char in pairs:
+            open_count = text.count(open_char)
+            close_count = text.count(close_char)
             
-            # Если есть закрывающая, но нет открывающей - удаляем все вхождения
-            if close_q in text and open_q not in text:
-                count = text.count(close_q)
-                text = text.replace(close_q, '')
-                if self.config.get('verbose', False) and count:
-                    logger.warning(f"         удалены {count} закрывающих кавычек '{close_q}' без пары")
+            if self.config.get('verbose', False) and (open_count > 0 or close_count > 0):
+                logger.warning(f"         символы {open_char}/{close_char}: {open_count} открыв, {close_count} закрыв")
             
-            # Если есть и те и другие - оставляем
-            if open_q in text and close_q in text:
-                # Проверяем, что они парные (четное количество)
-                open_count = text.count(open_q)
-                close_count = text.count(close_q)
-                
-                if open_count != close_count:
-                    if self.config.get('verbose', False):
-                        logger.warning(f"         непарные кавычки: {open_count} открывающих, {close_count} закрывающих")
-                    # Удаляем лишние
-                    while open_count > close_count:
-                        text = text.replace(open_q, '', 1)
-                        open_count -= 1
-                    while close_count > open_count:
-                        text = text.replace(close_q, '', 1)
-                        close_count -= 1
+            # Если количество не совпадает - удаляем все вхождения этого типа
+            if open_count != close_count:
+                # Но сохраняем, если это часть слова (например, Gauss в скобках)
+                # Проверяем, не является ли это частью контента
+                if open_count > 0 and close_count == 0 and open_char == '(':
+                    # Проверяем, есть ли закрывающая скобка дальше в тексте
+                    if ')' not in text:
+                        text = text.replace('(', '')
+                        if self.config.get('verbose', False):
+                            logger.warning(f"         удалена открывающая скобка без пары")
+                else:
+                    text = text.replace(open_char, '')
+                    text = text.replace(close_char, '')
+                    if self.config.get('verbose', False) and (open_count > 0 or close_count > 0):
+                        logger.warning(f"         удалены все символы {open_char}/{close_char} (непарные)")
+            else:
+                # Если парные, но есть множественные - оставляем только одну пару
+                if open_count > 1:
+                    # Находим первую открывающую и последнюю закрывающую
+                    first_open = text.find(open_char)
+                    last_close = text.rfind(close_char)
+                    
+                    if first_open != -1 and last_close != -1 and first_open < last_close:
+                        # Оставляем только эти символы
+                        middle = text[first_open+1:last_close].replace(open_char, '').replace(close_char, '')
+                        new_text = text[:first_open] + open_char + middle + close_char + text[last_close+1:]
+                        
+                        if new_text != text:
+                            if self.config.get('verbose', False):
+                                logger.warning(f"         оставлена только одна пара {open_char}{close_char}")
+                            text = new_text
         
         # ----------------------------------------------------------------------
         # Шаг 8: Финальная очистка
