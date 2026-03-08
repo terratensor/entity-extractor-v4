@@ -2,7 +2,7 @@ source:
   host: localhost
   port: 9306
   table: library2026
-  batch_size: 1000
+  batch_size: 10000
 
 model:
   name: Davlan/xlm-roberta-large-ner-hrl

@@ -65,7 +65,7 @@ fi
 mkdir -p results_test
 
 # Запускаем с ограничением в 10000 документов
-python -m app.v4.main --config config_test.yaml --limit 100000
+python -m app.v4.main --config config_test.yaml --limit 1000
 
 echo "========================================="
 echo "✅ Тест завершён"
