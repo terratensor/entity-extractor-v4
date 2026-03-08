@@ -623,78 +623,81 @@ class WordExpander:
         # ----------------------------------------------------------------------
         full_word = original_text[word_start:word_end]
         
-        # ----------------------------------------------------------------------
+                # ----------------------------------------------------------------------
         # ПРОВЕРКА НАЛИЧИЯ РАЗДЕЛИТЕЛЕЙ
-        # ----------------------------------------------------------------------
-        expansion_cancelled = False
-        
+        # ----------------------------------------------------------------------            
         if left_expanded or right_expanded:
             
-            # ----------------------------------------------------------------------
-            # ПРОВЕРКА 1: разделители ВНУТРИ исходного диапазона
-            # ----------------------------------------------------------------------
-            if self.config.get('verbose', False):
-                logger.warning(f"      проверка разделителей внутри исходного диапазона ({start_pos}-{end_pos}):")
-            
+            # =========================================================================
+            # ВАЖНО! ПРОВЕРКА ВНУТРИ ИСХОДНОГО ДИАПАЗОНА
+            # =========================================================================
+            # Этот блок проверяет символы между start_pos и end_pos на наличие разделителей.
+            # Он выполняется ВСЕГДА, независимо от того, было расширение или нет.
+            #
+            # ПОЧЕМУ ЭТО КРИТИЧНО:
+            # 1. Для случая 'Алданов… Удивительная' - многоточие '…' находится ВНУТРИ
+            #    исходного диапазона и должно отменить расширение
+            # 2. Для случая '« мирной литературы' - пробел внутри исходного диапазона
+            #    должен отменить расширение, даже если мы расширяемся вправо
+            # 3. Без этой проверки мы теряем контекст и начинаем ходить по кругу,
+            #    то исправляя одно, то ломая другое
+            #
+            # НИ В КОЕМ СЛУЧАЕ НЕ УДАЛЯТЬ И НЕ ПЕРЕМЕЩАТЬ ЭТОТ БЛОК!
+            # =========================================================================
             for pos in range(start_pos, end_pos):
                 if pos >= len(original_text):
                     break
                 char = original_text[pos]
                 if char in self.WORD_BREAKS and char not in self.ALL_QUOTES and char != '-':
                     if self.config.get('verbose', False):
-                        logger.warning(f"         найден разделитель '{char}' на позиции {pos} - расширение отменяется")
-                    expansion_cancelled = True
-                    break
-            
-            # Если расширение отменено, сбрасываем флаги и возвращаем исходные границы
-            if expansion_cancelled:
-                left_expanded = False
-                right_expanded = False
-                word_start = start_pos
-                word_end = end_pos
-                full_word = original_text[word_start:word_end]
-            else:
-                # ----------------------------------------------------------------------
-                # ПРОВЕРКА 2: разделители в ЛЕВОЙ добавленной части
-                # ----------------------------------------------------------------------
-                if left_expanded:
-                    if self.config.get('verbose', False):
-                        logger.warning(f"      проверка левой добавленной части ({word_start}-{start_pos}):")
-                    
-                    for pos in range(word_start, start_pos):
-                        if pos >= len(original_text):
-                            break
-                        char = original_text[pos]
-                        if char in self.WORD_BREAKS and char not in self.ALL_QUOTES and char != '-':
-                            if self.config.get('verbose', False):
-                                logger.warning(f"         найден разделитель '{char}' на позиции {pos} в левой части - расширение отменяется")
-                            expansion_cancelled = True
-                            break
-                
-                # ----------------------------------------------------------------------
-                # ПРОВЕРКА 3: разделители в ПРАВОЙ добавленной части
-                # ----------------------------------------------------------------------
-                if not expansion_cancelled and right_expanded:
-                    if self.config.get('verbose', False):
-                        logger.warning(f"      проверка правой добавленной части ({end_pos}-{word_end}):")
-                    
-                    for pos in range(end_pos, word_end):
-                        if pos >= len(original_text):
-                            break
-                        char = original_text[pos]
-                        if char in self.WORD_BREAKS and char not in self.ALL_QUOTES and char != '-':
-                            if self.config.get('verbose', False):
-                                logger.warning(f"         найден разделитель '{char}' на позиции {pos} в правой части - расширение отменяется")
-                            expansion_cancelled = True
-                            break
-                
-                # Если расширение отменено, сбрасываем флаги
-                if expansion_cancelled:
+                        logger.warning(f"         найден разделитель '{char}' на позиции {pos} внутри исходного диапазона - расширение отменяется")
+                    # Сбрасываем всё расширение
                     left_expanded = False
                     right_expanded = False
                     word_start = start_pos
                     word_end = end_pos
                     full_word = original_text[word_start:word_end]
+                    break
+            
+            # ----------------------------------------------------------------------
+            # ПРОВЕРКА ДЛЯ ЛЕВОГО РАСШИРЕНИЯ: разделители между word_start и start_pos
+            # ----------------------------------------------------------------------
+            if left_expanded:
+                if self.config.get('verbose', False):
+                    logger.warning(f"      проверка левой добавленной части ({word_start}-{start_pos}):")
+                
+                for pos in range(word_start, start_pos):
+                    if pos >= len(original_text):
+                        break
+                    char = original_text[pos]
+                    if char in self.WORD_BREAKS and char not in self.ALL_QUOTES and char != '-':
+                        if self.config.get('verbose', False):
+                            logger.warning(f"         найден разделитель '{char}' на позиции {pos} в левой части - левое расширение отменяется")
+                        left_expanded = False
+                        word_start = start_pos
+                        # Пересоздаем full_word с новыми координатами
+                        full_word = original_text[word_start:word_end]
+                        break
+            
+            # ----------------------------------------------------------------------
+            # ПРОВЕРКА ДЛЯ ПРАВОГО РАСШИРЕНИЯ: разделители между end_pos и word_end
+            # ----------------------------------------------------------------------
+            if right_expanded:
+                if self.config.get('verbose', False):
+                    logger.warning(f"      проверка правой добавленной части ({end_pos}-{word_end}):")
+                
+                for pos in range(end_pos, word_end):
+                    if pos >= len(original_text):
+                        break
+                    char = original_text[pos]
+                    if char in self.WORD_BREAKS and char not in self.ALL_QUOTES and char != '-':
+                        if self.config.get('verbose', False):
+                            logger.warning(f"         найден разделитель '{char}' на позиции {pos} в правой части - правое расширение отменяется")
+                        right_expanded = False
+                        word_end = end_pos
+                        # Пересоздаем full_word с новыми координатами
+                        full_word = original_text[word_start:word_end]
+                        break
         
         # ----------------------------------------------------------------------
         # ОПРЕДЕЛЕНИЕ ТИПА РАСШИРЕНИЯ
