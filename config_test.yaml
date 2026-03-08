@@ -59,13 +59,13 @@ output:
     require_capital: true
     
     # Включить проверку на стоп-слова
-    enable_stopwords: true
+    enable_stopwords: false
     
     # Включить проверку на слияние
     enable_merge_check: true
     
     # Максимальное соотношение длин (расширенное / исходное)
-    max_length_ratio: 5.0
+    max_length_ratio: 15.0
     # Добавим список типичных окончаний (можно вынести в конфиг - зашито в коде)
     common_endings: ['а', 'я', 'ы', 'и', 'е', 'ё', 'ю', 'й']
     expand_entity_types: ['LOC', 'PER', 'ORG']

@@ -626,13 +626,12 @@ class WordExpander:
         # ----------------------------------------------------------------------
         # ПРОВЕРКА НАЛИЧИЯ РАЗДЕЛИТЕЛЕЙ
         # ----------------------------------------------------------------------
+        expansion_cancelled = False
+        
         if left_expanded or right_expanded:
             
             # ----------------------------------------------------------------------
             # ПРОВЕРКА 1: разделители ВНУТРИ исходного диапазона
-            # Проверяем символы между start_pos и end_pos.
-            # Если там есть разделители (например, многоточие), значит исходная
-            # сущность уже содержит разрыв и расширение отменяется.
             # ----------------------------------------------------------------------
             if self.config.get('verbose', False):
                 logger.warning(f"      проверка разделителей внутри исходного диапазона ({start_pos}-{end_pos}):")
@@ -643,44 +642,59 @@ class WordExpander:
                 char = original_text[pos]
                 if char in self.WORD_BREAKS and char not in self.ALL_QUOTES and char != '-':
                     if self.config.get('verbose', False):
-                        logger.warning(f"         найден разделитель '{char}' на позиции {pos} - отмена расширения")
-                    return text, 'none', start_pos, end_pos
+                        logger.warning(f"         найден разделитель '{char}' на позиции {pos} - расширение отменяется")
+                    expansion_cancelled = True
+                    break
             
-            # ----------------------------------------------------------------------
-            # ПРОВЕРКА 2: разделители в ЛЕВОЙ добавленной части
-            # Проверяем символы от нового начала (word_start) до исходного (start_pos).
-            # Если там есть разделители, значит слева другое слово.
-            # ----------------------------------------------------------------------
-            if left_expanded:
-                if self.config.get('verbose', False):
-                    logger.warning(f"      проверка левой добавленной части ({word_start}-{start_pos}):")
+            # Если расширение отменено, сбрасываем флаги и возвращаем исходные границы
+            if expansion_cancelled:
+                left_expanded = False
+                right_expanded = False
+                word_start = start_pos
+                word_end = end_pos
+                full_word = original_text[word_start:word_end]
+            else:
+                # ----------------------------------------------------------------------
+                # ПРОВЕРКА 2: разделители в ЛЕВОЙ добавленной части
+                # ----------------------------------------------------------------------
+                if left_expanded:
+                    if self.config.get('verbose', False):
+                        logger.warning(f"      проверка левой добавленной части ({word_start}-{start_pos}):")
+                    
+                    for pos in range(word_start, start_pos):
+                        if pos >= len(original_text):
+                            break
+                        char = original_text[pos]
+                        if char in self.WORD_BREAKS and char not in self.ALL_QUOTES and char != '-':
+                            if self.config.get('verbose', False):
+                                logger.warning(f"         найден разделитель '{char}' на позиции {pos} в левой части - расширение отменяется")
+                            expansion_cancelled = True
+                            break
                 
-                for pos in range(word_start, start_pos):
-                    if pos >= len(original_text):
-                        break
-                    char = original_text[pos]
-                    if char in self.WORD_BREAKS and char not in self.ALL_QUOTES and char != '-':
-                        if self.config.get('verbose', False):
-                            logger.warning(f"         найден разделитель '{char}' на позиции {pos} в левой части - отмена расширения")
-                        return text, 'none', start_pos, end_pos
-            
-            # ----------------------------------------------------------------------
-            # ПРОВЕРКА 3: разделители в ПРАВОЙ добавленной части
-            # Проверяем символы от исходного конца (end_pos) до нового (word_end).
-            # Если там есть разделители, значит справа другое слово.
-            # ----------------------------------------------------------------------
-            if right_expanded:
-                if self.config.get('verbose', False):
-                    logger.warning(f"      проверка правой добавленной части ({end_pos}-{word_end}):")
+                # ----------------------------------------------------------------------
+                # ПРОВЕРКА 3: разделители в ПРАВОЙ добавленной части
+                # ----------------------------------------------------------------------
+                if not expansion_cancelled and right_expanded:
+                    if self.config.get('verbose', False):
+                        logger.warning(f"      проверка правой добавленной части ({end_pos}-{word_end}):")
+                    
+                    for pos in range(end_pos, word_end):
+                        if pos >= len(original_text):
+                            break
+                        char = original_text[pos]
+                        if char in self.WORD_BREAKS and char not in self.ALL_QUOTES and char != '-':
+                            if self.config.get('verbose', False):
+                                logger.warning(f"         найден разделитель '{char}' на позиции {pos} в правой части - расширение отменяется")
+                            expansion_cancelled = True
+                            break
                 
-                for pos in range(end_pos, word_end):
-                    if pos >= len(original_text):
-                        break
-                    char = original_text[pos]
-                    if char in self.WORD_BREAKS and char not in self.ALL_QUOTES and char != '-':
-                        if self.config.get('verbose', False):
-                            logger.warning(f"         найден разделитель '{char}' на позиции {pos} в правой части - отмена расширения")
-                        return text, 'none', start_pos, end_pos
+                # Если расширение отменено, сбрасываем флаги
+                if expansion_cancelled:
+                    left_expanded = False
+                    right_expanded = False
+                    word_start = start_pos
+                    word_end = end_pos
+                    full_word = original_text[word_start:word_end]
         
         # ----------------------------------------------------------------------
         # ОПРЕДЕЛЕНИЕ ТИПА РАСШИРЕНИЯ
