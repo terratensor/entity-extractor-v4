@@ -66,5 +66,8 @@ DEFAULTS: Dict = {
     'expand_entity_types': ['LOC', 'PER', 'ORG'],
     
     # Включить финальную очистку
-    'enable_final_cleaning': True
+    'enable_final_cleaning': True,
+
+    # Максимальное соотношение длин для предотвращения "срыва" в предложения
+    'max_sentence_ratio': 5.0
 }
