@@ -38,6 +38,9 @@ PUNCTUATION: str = '.,!?;:…—–-•=+@#_|\\/*$%^&@~<>'
 PUNCTUATION_START: str = PUNCTUATION
 PUNCTUATION_END: str = PUNCTUATION + '№'
 
+# Список сокращений для удаления из начала строки
+ABBREVIATIONS: list = ['г.о.', 'г.п.', 'с.п.', 'пос.', 'г.', 'пгт.', 'пос.', 'гп.', 'дер.', 'п.', 'с.', 'сл.', 'ст.', 'ст-ца']  # можно расширять
+
 # [ЭКСПЕРИМЕНТАЛЬНЫЕ ПАРАМЕТРЫ ЗНАЧЕНИЯ ПО УМОЛЧАНИЮ]
 DEFAULTS: Dict = {
     # Минимальная длина токена для расширения
@@ -69,5 +72,8 @@ DEFAULTS: Dict = {
     'enable_final_cleaning': True,
 
     # Максимальное соотношение длин для предотвращения "срыва" в предложения
-    'max_sentence_ratio': 5.0
+    'max_sentence_ratio': 5.0,
+
+    # Включить очистку начала от сокращений
+    'enable_beginning_cleaning': True,
 }

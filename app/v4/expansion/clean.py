@@ -186,13 +186,14 @@ def clean_entity(text: str, config: dict, verbose: bool = False) -> str:
                             logger.warning(f"         оставлена только одна пара {open_char}{close_char}")
                         text = new_text
     
+ # ----------------------------------------------------------------------
+    # Шаг 8: Очистка начала от сокращений (опционально)
     # ----------------------------------------------------------------------
-    # Шаг 8: Финальная проверка кавычек в начале/конце
-    # ----------------------------------------------------------------------
-    # text = fix_edge_quotes(text, verbose)
+    if config.get('enable_beginning_cleaning', False):
+        text = clean_beginning(text, constants.ABBREVIATIONS, constants.PUNCTUATION, verbose)
     
     # ----------------------------------------------------------------------
-    # Шаг 9: Финальный trim (на всякий случай)
+    # Шаг 9: Финальный trim
     # ----------------------------------------------------------------------
     text = text.strip()
     text = ' '.join(text.split())
@@ -246,5 +247,120 @@ def fix_edge_quotes(text: str, verbose: bool = False) -> str:
         text = text[:-1]
         if verbose:
             logger.warning(f"         удалена одна кавычка в конце")
+    
+    return text
+
+def strip_abbreviations(text: str, abbreviations: list, verbose: bool = False) -> str:
+    """
+    Удаляет сокращения из начала строки (только если они в начале и с учетом регистра).
+    
+    Args:
+        text: исходная строка
+        abbreviations: список сокращений для удаления
+        verbose: флаг отладки
+    
+    Returns:
+        str: строка без сокращения в начале
+    """
+    if not text:
+        return text
+    
+    original = text
+    text_lower = text.lower()
+    
+    for abbr in abbreviations:
+        if text_lower.startswith(abbr):
+            # Проверяем, что это действительно слово (после сокращения пробел или конец)
+            remainder = text[len(abbr):]
+            if not remainder or remainder[0] in [' ', '\t', '\n', '\r']:
+                text = remainder.lstrip()
+                if verbose:
+                    logger.warning(f"         удалено сокращение '{abbr}' из начала")
+                break
+    
+    return text
+
+
+def strip_punctuation(text: str, punctuation: str, verbose: bool = False) -> str:
+    """
+    Рекурсивно удаляет знаки пунктуации из начала и конца строки.
+    
+    Args:
+        text: исходная строка
+        punctuation: строка со знаками пунктуации для удаления
+        verbose: флаг отладки
+    
+    Returns:
+        str: строка без пунктуации в начале и конце
+    """
+    if not text:
+        return text
+    
+    original = text
+    changed = True
+    
+    while changed and text:
+        changed = False
+        old_text = text
+        
+        # Удаляем с начала
+        while text and text[0] in punctuation:
+            text = text[1:]
+            changed = True
+        
+        # Удаляем с конца
+        while text and text[-1] in punctuation:
+            text = text[:-1]
+            changed = True
+        
+        if changed and verbose:
+            logger.warning(f"         удалены знаки: '{old_text}' -> '{text}'")
+    
+    return text
+
+
+def clean_beginning(text: str, abbreviations: list, punctuation: str, verbose: bool = False) -> str:
+    """
+    Комплексная очистка начала строки:
+    1. Удаляем сокращения
+    2. Trim пробелов
+    3. Рекурсивно удаляем пунктуацию
+    4. Повторяем пока есть изменения
+    """
+    if not text:
+        return text
+    
+    original = text
+    changed = True
+    iteration = 0
+    
+    while changed:
+        changed = False
+        iteration += 1
+        old_text = text
+        
+        # Шаг 1: удаляем сокращения
+        new_text = strip_abbreviations(text, abbreviations, verbose)
+        if new_text != text:
+            text = new_text
+            changed = True
+            if verbose:
+                logger.warning(f"         итерация {iteration}: после удаления сокращений")
+        
+        # Шаг 2: trim пробелов
+        new_text = text.strip()
+        if new_text != text:
+            text = new_text
+            changed = True
+            if verbose:
+                logger.warning(f"         итерация {iteration}: после trim")
+        
+        # Шаг 3: рекурсивно удаляем пунктуацию
+        new_text = strip_punctuation(text, punctuation, verbose)
+        if new_text != text:
+            text = new_text
+            changed = True
+            if verbose:
+                logger.warning(f"         итерация {iteration}: после удаления пунктуации")
     
     return text
