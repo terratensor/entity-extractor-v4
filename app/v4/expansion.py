@@ -61,7 +61,7 @@ class WordExpander:
     VOWELS = set('аеёиоуыэюя')
     
     # Разделители слов (пробелы и знаки препинания, НО не кавычки!)
-    WORD_BREAKS = set(' .,!?;:…()[]{}""\'\n\r\t')
+    WORD_BREAKS = set(' .,!?;:…\n\r\t') # Убраны все виды скобок ()[]{}<> | Убраны кавычки ""\'
     
     # Кавычки (разные типографские варианты)
     OPEN_QUOTES = {'«', '“', '„', '"', "'"}
@@ -69,9 +69,9 @@ class WordExpander:
     ALL_QUOTES = OPEN_QUOTES | CLOSE_QUOTES
 
     # Открывающие скобки
-    OPEN_BRACKETS = {'(', '[', '{'}
+    OPEN_BRACKETS = {'(', '[', '{', '<'}
     # Закрывающие скобки
-    CLOSE_BRACKETS = {')', ']', '}'}
+    CLOSE_BRACKETS = {')', ']', '}', '>'}
     # Все скобки для проверки
     ALL_BRACKETS = OPEN_BRACKETS | CLOSE_BRACKETS
     
@@ -714,18 +714,78 @@ class WordExpander:
             return text, 'none', start_pos, end_pos
         
         # ----------------------------------------------------------------------
-        # ПРОВЕРКА 2: для расширенных слов доверяем оригинальному тексту
-        # Если мы расширили слово, используя оригинальный текст,
-        # доверяем оригиналу, даже если оно не содержит исходный текст модели
+        # ПРОВЕРКА 2: многоуровневая проверка подстроки
+        # Если мы НЕ расширяли слово, проверяем, что исходный текст является подстрокой
+        # с учетом нормализации пробелов, кавычек и последовательности слов
         # ----------------------------------------------------------------------
         if left_expanded or right_expanded:
+            # Мы расширили слово, используя оригинальный текст
+            # доверяем оригиналу, даже если оно не содержит исходный текст модели
             if self.config.get('verbose', False):
                 logger.warning(f"      ✅ слово расширено, доверяем оригиналу")
         else:
-            # Слово не расширялось, проверяем подстроку как обычно
-            if text not in full_word:
+            # Слово не расширялось - применяем многоуровневую проверку
+            # Уровень 1: нормализация пробелов
+            text_norm = ' '.join(text.split())
+            full_norm = ' '.join(full_word.split())
+            
+            if self.config.get('verbose', False):
+                logger.warning(f"      уровень 1 (норм. пробелов): '{text_norm}' vs '{full_norm}'")
+            
+            is_substring = False
+            level = 0
+            
+            if text_norm in full_norm:
+                is_substring = True
+                level = 1
                 if self.config.get('verbose', False):
-                    logger.warning(f"      ❌ исходный текст не подстрока (без расширения)")
+                    logger.warning(f"      ✅ подстрока (уровень 1)")
+            else:
+                # Уровень 2: удаляем кавычки с обеих сторон
+                text_unquoted = text_norm.strip('«»""')
+                full_unquoted = full_norm.strip('«»""')
+                
+                if self.config.get('verbose', False):
+                    logger.warning(f"      уровень 2 (без кавычек): '{text_unquoted}' vs '{full_unquoted}'")
+                
+                if text_unquoted in full_unquoted:
+                    is_substring = True
+                    level = 2
+                    if self.config.get('verbose', False):
+                        logger.warning(f"      ✅ подстрока (уровень 2)")
+                else:
+                    # Уровень 3: удаляем ВСЕ пробелы в начале и конце
+                    text_clean = text_unquoted.strip()
+                    full_clean = full_unquoted.strip()
+                    
+                    if self.config.get('verbose', False):
+                        logger.warning(f"      уровень 3 (strip): '{text_clean}' vs '{full_clean}'")
+                    
+                    if text_clean in full_clean:
+                        is_substring = True
+                        level = 3
+                        if self.config.get('verbose', False):
+                            logger.warning(f"      ✅ подстрока (уровень 3)")
+                    else:
+                        # Уровень 4: разбиваем на слова и проверяем последовательность
+                        text_words = text_clean.split()
+                        full_words = full_clean.split()
+                        
+                        if self.config.get('verbose', False):
+                            logger.warning(f"      уровень 4 (слова): {text_words} vs {full_words}")
+                        
+                        if len(text_words) > 0:
+                            for i in range(len(full_words) - len(text_words) + 1):
+                                if full_words[i:i+len(text_words)] == text_words:
+                                    is_substring = True
+                                    level = 4
+                                    if self.config.get('verbose', False):
+                                        logger.warning(f"      ✅ последовательность слов найдена на позиции {i}")
+                                    break
+            
+            if not is_substring:
+                if self.config.get('verbose', False):
+                    logger.warning(f"      ❌ исходный текст не подстрока после всех уровней")
                 return text, 'none', start_pos, end_pos
         
         # ----------------------------------------------------------------------
