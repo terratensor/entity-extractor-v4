@@ -33,7 +33,7 @@ class WriterWorker(StoppableThread):
         input_queue: Queue,
         checkpoint_manager,
         stop_event,
-        verbose: bool = False,  # NEW
+        verbose: bool = False,
         name: str = "WriterWorker"
     ):
         """
@@ -49,14 +49,13 @@ class WriterWorker(StoppableThread):
         self.config = config
         self.input_queue = input_queue
         self.checkpoint = checkpoint_manager
-
         self.verbose = verbose
         
         # Параметры вывода
         self.output_path = Path(config.path)
         self.delimiter = config.delimiter
         self.include_confidence = config.include_confidence
-        self.include_positions = config.include_positions  # важно для расширения
+        self.include_positions = config.include_positions
         self.flush_interval = config.flush_interval
         self.buffer_size = config.buffer_size
         
@@ -66,21 +65,20 @@ class WriterWorker(StoppableThread):
         
         if self.enable_expansion:
             expansion_params = getattr(config, 'expansion_params', {})
-            # Добавляем verbose из глобального конфига
-            expansion_params['verbose'] = self.verbose  # <-- ВАЖНО!
+            # Добавляем verbose из настроек writer
+            expansion_params['verbose'] = self.verbose
             self.expander = WordExpander(expansion_params)
             logger.info(f"🤖 WordExpander инициализирован (включено расширение слов)")
             logger.info(f"   Параметры: {expansion_params}")
         
         # Буферы
-        self.buffer = []
+        self.buffer = []  # теперь хранит списки значений, а не строки
         self.pending_docs = {}
         self.completed_docs = set()
         
         # Для текстов документов (нужно для расширения)
         self.doc_texts = {}
         self.text_cleanup_threshold = 1000
-
         self.doc_text_parts = {}  # doc_id -> {chunk_id: text}
         
         # Для отслеживания прогресса
@@ -125,14 +123,14 @@ class WriterWorker(StoppableThread):
                     self._process_result(result)
                     
                     # Проверяем необходимость сброса буфера
-                    self._check_flush()
+                    self._check_flush(file_handle)
                     
                     # Проверяем необходимость сохранения чекпоинта
                     self._check_checkpoint()
                     
                 except Empty:
                     # Нет данных, проверяем таймаут для сброса
-                    self._check_flush()
+                    self._check_flush(file_handle)
                     continue
                 except Exception as e:
                     logger.error(f"{self.name}: ошибка обработки: {e}", exc_info=True)
@@ -159,13 +157,13 @@ class WriterWorker(StoppableThread):
             f"📊 {self.name} завершён: обработано {self.stats['processed_docs']} док, "
             f"{self.stats['completed_docs']} завершено, "
             f"{self.stats['total_entities']} сущностей, "
-            f"записей: {len(self.buffer)}, "
+            f"записей в буфере: {len(self.buffer)}, "
             f"время: {elapsed:.1f} сек"
         )
     
     def _open_file(self):
         """
-        Открывает файл для записи, добавляет заголовок если файл новый.
+        Открывает файл для записи, создает csv.writer и добавляет заголовок если файл новый.
         
         Returns:
             file object: открытый файл
@@ -174,10 +172,12 @@ class WriterWorker(StoppableThread):
         
         # Открываем в режиме добавления
         f = open(self.output_path, 'a', encoding='utf-8', newline='')
-        writer = csv.writer(f, delimiter=self.delimiter)
         
-        # Если файл новый, пишем заголовок
+        # Если файл новый, пишем заголовок через csv.writer
         if not file_exists:
+            writer = csv.writer(f, delimiter=self.delimiter,
+                               quoting=csv.QUOTE_MINIMAL,
+                               doublequote=True)
             header = ['doc_id', 'entity_type', 'entity_text']
             if self.include_confidence:
                 header.append('confidence')
@@ -206,7 +206,7 @@ class WriterWorker(StoppableThread):
         total_chunks = result['total_chunks']
         entities = result.get('entities', [])
         
-        # [НОВОЕ] Сохраняем текст каждого чанка
+        # Сохраняем текст каждого чанка
         if 'text' in result:
             if doc_id not in self.doc_text_parts:
                 self.doc_text_parts[doc_id] = {}
@@ -262,17 +262,11 @@ class WriterWorker(StoppableThread):
     def _write_entities(self, doc_id: int, entities: List[Dict]) -> None:
         """
         Добавляет сущности в буфер для записи с опциональным расширением.
+        В буфер добавляются списки значений, а не готовая строка.
         """
         # Получаем полный текст документа
         doc_text = self.doc_texts.get(doc_id, "")
         
-        # Если текст не полный, но есть части - пробуем собрать (на всякий случай)
-        if not doc_text and doc_id in self.doc_text_parts:
-            parts = self.doc_text_parts[doc_id]
-            # Проверяем, что у нас есть информация о total_chunks
-            # В реальности это должно быть в pending_docs, но подстрахуемся
-            if self.verbose:
-                logger.warning(f"🔥 ВНИМАНИЕ: doc {doc_id} пишется без полного текста!")
         if self.verbose:
             logger.warning(f"🔥 _write_entities для doc {doc_id}, entities: {len(entities)}, текст длина: {len(doc_text)}")
         
@@ -289,30 +283,33 @@ class WriterWorker(StoppableThread):
                     logger.warning(f"🔥   ПОПЫТКА РАСШИРЕНИЯ для '{entity.get('text')}'")
                 processed_entity = self.expander.expand_entity(entity, doc_text)
                 
-                if processed_entity != entity:
-                    if self.verbose:
-                        logger.warning(f"🔥   РАСШИРЕНО: '{entity.get('text')}' -> '{processed_entity.get('text')}'")
+                if processed_entity != entity and self.verbose:
+                    logger.warning(f"🔥   РАСШИРЕНО: '{entity.get('text')}' -> '{processed_entity.get('text')}'")
             
+            # ======================================================================
+            # ФОРМИРОВАНИЕ СПИСКА ЗНАЧЕНИЙ (НЕ СТРОКИ!)
+            # ======================================================================
             row = [
-                doc_id,
+                str(doc_id),
                 processed_entity.get('type', 'MISC'),
                 processed_entity.get('text', '')
             ]
             
             if self.include_confidence:
-                row.append(processed_entity.get('confidence', 0.5))
+                row.append(str(round(processed_entity.get('confidence', 0.5), 4)))
             
             if self.include_positions:
-                # Берем первую и последнюю позицию
                 if 'positions' in processed_entity and processed_entity['positions']:
                     first_pos = processed_entity['positions'][0]
                     last_pos = processed_entity['positions'][-1]
-                    row.append(first_pos.get('start', 0))
-                    row.append(last_pos.get('end', 0))
+                    row.append(str(first_pos.get('start', 0)))
+                    row.append(str(last_pos.get('end', 0)))
                 else:
-                    row.extend([0, 0])
+                    row.extend(['0', '0'])
             
+            # Добавляем СПИСОК в буфер, csv.writer сам обработает экранирование
             self.buffer.append(row)
+            self.stats['total_entities'] += 1
         
         # Периодический вывод статистики расширений
         if (self.enable_expansion and self.expander and 
@@ -323,9 +320,9 @@ class WriterWorker(StoppableThread):
             percent = exp_stats.get('expand_percent', 0)
             
             logger.info(f"📊 Статистика расширений: попыток={attempts}, "
-                    f"расширено={expanded} ({percent}%)")
-            
-    def _check_flush(self) -> None:
+                       f"расширено={expanded} ({percent}%)")
+    
+    def _check_flush(self, file_handle) -> None:
         """Проверяет необходимость сброса буфера на диск."""
         should_flush = (
             len(self.buffer) >= self.buffer_size or
@@ -333,22 +330,8 @@ class WriterWorker(StoppableThread):
         )
         
         if should_flush and self.buffer:
-            # Открываем файл и сбрасываем буфер
-            with open(self.output_path, 'a', encoding='utf-8', newline='') as f:
-                writer = csv.writer(f, delimiter=self.delimiter)
-                writer.writerows(self.buffer)
-                
-                # Запоминаем размер для статистики
-                self.bytes_written += f.tell()
-            
-            # Очищаем буфер
-            self.buffer.clear()
-            self.last_flush_time = time.time()
-            self.stats['buffer_flushes'] += 1
-            
-            logger.debug(f"{self.name}: буфер сброшен, записей: {len(self.buffer)}")
-
-    # [ЭКСПЕРИМЕНТАЛЬНЫЙ КОД]
+            self._flush_buffer(file_handle)
+    
     def _store_doc_text(self, doc_id: int, text: str):
         """Сохраняет текст документа для последующего расширения."""
         self.doc_texts[doc_id] = text
@@ -388,20 +371,29 @@ class WriterWorker(StoppableThread):
         }
     
     def _flush_buffer(self, file_handle) -> None:
-        """Принудительный сброс буфера в указанный файл."""
+        """Принудительный сброс буфера в указанный файл с использованием csv.writer."""
         if not self.buffer:
             return
         
-        writer = csv.writer(file_handle, delimiter=self.delimiter)
+        # Создаем writer для этого файла с правильными параметрами экранирования
+        writer = csv.writer(file_handle, delimiter=self.delimiter,
+                           quoting=csv.QUOTE_MINIMAL,
+                           doublequote=True,
+                           escapechar=None)
+        
+        # Записываем все строки из буфера
         writer.writerows(self.buffer)
         file_handle.flush()
         os.fsync(file_handle.fileno())
         
-        self.bytes_written += file_handle.tell() - self.bytes_written
+        # Обновляем статистику
+        current_pos = file_handle.tell()
+        self.bytes_written = current_pos
         self.buffer.clear()
+        self.last_flush_time = time.time()
         self.stats['buffer_flushes'] += 1
         
-        logger.info(f"{self.name}: финальный сброс буфера, {len(self.buffer)} записей")
+        logger.debug(f"{self.name}: буфер сброшен, записей: {len(self.buffer)}")
     
     def get_stats(self) -> Dict[str, Any]:
         """Возвращает статистику работы воркера."""
@@ -409,6 +401,9 @@ class WriterWorker(StoppableThread):
         stats['entities_by_type'] = dict(self.stats['entities_by_type'])
         stats['pending_docs'] = len(self.pending_docs)
         stats['buffer_size'] = len(self.buffer)
+        
+        # Явно добавляем total_entities для совместимости
+        stats['total_entities'] = self.stats.get('total_entities', 0)
         
         if stats['start_time']:
             stats['current_time'] = time.time() - stats['start_time']
