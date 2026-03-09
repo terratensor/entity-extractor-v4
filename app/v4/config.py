@@ -79,18 +79,63 @@ class GPUDeviceConfig:
 @dataclass
 class OutputConfig:
     """Конфигурация выходных данных"""
-    format: str = "csv"  # csv или parquet
+    format: str = "csv"
     path: str = "./results/output.csv"
     delimiter: str = "|"
     include_confidence: bool = True
     include_positions: bool = False
-    flush_interval: int = 60  # секунд
-    buffer_size: int = 1000  # строк для буферизации перед записью
+    flush_interval: int = 60
+    buffer_size: int = 1000
+    
+    # [ЭКСПЕРИМЕНТАЛЬНЫЕ ПАРАМЕТРЫ] Расширение слов
+    enable_expansion: bool = False  # включить/выключить расширение
+    expansion_params: Dict = field(default_factory=dict)  # <- теперь поле определено
+
+    # expansion_params: Dict = field(default_factory=lambda: {
+    #     'min_token_length': 2,
+    #     'max_search_left': 30,
+    #     'max_search_right': 30,
+    #     'min_coverage': 0.3,
+    #     'require_capital': True,
+    #     'enable_stopwords': True,
+    #     'enable_merge_check': True,
+    #     'max_length_ratio': 3.0
+    # })
     
     @classmethod
     def from_dict(cls, data: dict):
-        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
-
+        # Создаем копию, чтобы не изменять исходный словарь
+        config_data = data.copy()
+        
+        # Дефолтные параметры расширения
+        default_expansion_params = {
+            'min_token_length': 2,
+            'max_search_left': 30,
+            'max_search_right': 30,
+            'min_coverage': 0.3,
+            'require_capital': True,
+            'enable_stopwords': True,
+            'enable_merge_check': True,
+            'max_length_ratio': 3.0
+        }
+        
+        # Обрабатываем expansion_params, если они есть
+        if 'expansion_params' in config_data:
+            # Если параметры переданы как словарь, объединяем с дефолтными
+            user_params = config_data['expansion_params']
+            if isinstance(user_params, dict):
+                merged_params = default_expansion_params.copy()
+                merged_params.update(user_params)
+                config_data['expansion_params'] = merged_params
+        else:
+            # Если параметры не переданы, используем дефолтные
+            config_data['expansion_params'] = default_expansion_params
+        
+        # Создаем экземпляр, передавая только те поля, которые есть в классе
+        field_names = set(cls.__dataclass_fields__.keys())
+        filtered_data = {k: v for k, v in config_data.items() if k in field_names}
+        
+        return cls(**filtered_data)
 
 @dataclass
 class CheckpointConfig:
@@ -109,6 +154,7 @@ class LoggingConfig:
     level: str = "INFO"
     file: Optional[str] = "./batch_processor_v4.log"
     format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    verbose: bool = False  # NEW: подробная отладка для расширений
     
     @classmethod
     def from_dict(cls, data: dict):

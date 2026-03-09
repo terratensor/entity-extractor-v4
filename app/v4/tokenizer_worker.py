@@ -158,7 +158,6 @@ class TokenizerWorker(StoppableThread):
         text = doc['text']
         
         # Используем return_overflowing_tokens для автоматической разбивки
-        # с перекрытием, если указано
         stride = 0
         if self.config.overlap_ratio > 0:
             stride = int(self.config.max_tokens * self.config.overlap_ratio)
@@ -167,7 +166,7 @@ class TokenizerWorker(StoppableThread):
         inputs = self.tokenizer(
             text,
             return_overflowing_tokens=True,
-            return_offsets_mapping=True,  # <-- ЭТО НОВОЕ
+            return_offsets_mapping=True,
             max_length=self.config.max_tokens,
             stride=stride,
             truncation=True,
@@ -184,31 +183,39 @@ class TokenizerWorker(StoppableThread):
         for i in range(chunk_count):
             input_ids = inputs['input_ids'][i]
             attention_mask = inputs['attention_mask'][i]
-            
-            # === НОВЫЙ КОД: получаем текст ТОЛЬКО для этого чанка ===
             offsets = inputs['offset_mapping'][i]
             
-            # Находим реальные границы в тексте
-            if offsets and len(offsets) > 0:
-                # Пропускаем специальные токены в начале и конце
-                start_pos = None
-                end_pos = None
+            # ------------------------------------------------------------------
+            # НОВЫЙ МЕТОД: надежное определение позиций
+            # ------------------------------------------------------------------
+            # Собираем все валидные start и end позиции
+            valid_starts = []
+            valid_ends = []
+            
+            for offset in offsets:
+                if offset and offset[1] > 0:  # ненулевая длина
+                    valid_starts.append(offset[0])
+                    valid_ends.append(offset[1])
+            
+            if valid_starts and valid_ends:
+                # Берем минимальный start и максимальный end
+                global_start = min(valid_starts)
+                global_end = max(valid_ends)
                 
-                for offset in offsets:
-                    if offset and offset[0] != 0 and offset[1] != 0:
-                        if start_pos is None:
-                            start_pos = offset[0]
-                        end_pos = offset[1]
+                # Вырезаем текст по этим позициям
+                chunk_text = text[global_start:global_end]
                 
-                if start_pos is not None and end_pos is not None:
-                    chunk_text = text[start_pos:end_pos]
-                else:
-                    # Запасной вариант: декодируем токены
+                # Проверка на всякий случай
+                if not chunk_text or len(chunk_text) < 2:
+                    # Fallback
                     chunk_text = self.tokenizer.decode(input_ids, skip_special_tokens=True)
+                    global_start = 0
+                    global_end = len(chunk_text)
             else:
-                # Запасной вариант: декодируем токены
+                # Fallback если нет валидных offsets
                 chunk_text = self.tokenizer.decode(input_ids, skip_special_tokens=True)
-            # === КОНЕЦ НОВОГО КОДА ===
+                global_start = 0
+                global_end = len(chunk_text)
             
             chunks.append({
                 'id': doc_id,
@@ -216,7 +223,9 @@ class TokenizerWorker(StoppableThread):
                 'total_chunks': chunk_count,
                 'input_ids': input_ids,
                 'attention_mask': attention_mask,
-                'text': chunk_text,  # <-- ТЕПЕРЬ ЗДЕСЬ ТОЛЬКО ТЕКСТ ЧАНКА
+                'text': chunk_text,
+                'global_start': global_start,
+                'global_end': global_end,
                 'token_count': len(input_ids)
             })
             
@@ -225,9 +234,8 @@ class TokenizerWorker(StoppableThread):
             self.stats['total_tokens'] += len(input_ids)
         
         self.stats['processed_docs'] += 1
-        
         return chunks
-    
+        
     def get_stats(self) -> Dict[str, Any]:
         """Возвращает статистику работы воркера."""
         stats = self.stats.copy()

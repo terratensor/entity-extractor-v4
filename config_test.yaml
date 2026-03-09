@@ -2,17 +2,17 @@ source:
   host: localhost
   port: 9306
   table: library2026
-  batch_size: 1000
+  batch_size: 10000
 
 model:
   name: Davlan/xlm-roberta-large-ner-hrl
   max_tokens: 512
   overlap_ratio: 0.0
   min_confidence: 0.5
-  include_positions: false
+  include_positions: true
 
 queues:
-  queue1_size: 10000
+  queue1_size: 5000
   queue2_size: 1000
   queue3_size: 2000
 
@@ -32,10 +32,44 @@ output:
   format: csv
   path: ./results_test/output.csv
   delimiter: "|"
-  include_confidence: true
-  include_positions: false
-  flush_interval: 10
+  include_confidence: true    
+  include_positions: true  # ВАЖНО для расширения
+  flush_interval: 30
   buffer_size: 1000
+
+  # [ЭКСПЕРИМЕНТАЛЬНЫЕ ПАРАМЕТРЫ] Расширение слов
+  enable_expansion: true
+  expansion_params:
+    # Минимальная длина токена для расширения
+    min_token_length: 2
+    
+    # Максимальное расстояние поиска влево/вправо
+    max_search_left: 30
+    max_search_right: 30
+    
+    # Минимальная доля исходного текста в расширенном (0.25 = 25%)
+    # полное слово: 'Вернувшись' (10 символов)
+    # исходное: 'Вер' (3 символа)
+    # покрытие = 3 / 10 = 0.3
+    # ❌ покрытие 0.30 < 0.5
+    # Слишком маленькие куски (1-2 буквы) будут отсекаться другими проверками
+    min_coverage: 0.1
+    
+    # Требовать заглавную букву для LOC/PER
+    require_capital: true
+    
+    # Включить проверку на стоп-слова
+    enable_stopwords: false
+    
+    # Включить проверку на слияние
+    enable_merge_check: true
+    
+    # Максимальное соотношение длин (расширенное / исходное)
+    max_length_ratio: 15.0
+    # Добавим список типичных окончаний (можно вынести в конфиг - зашито в коде)
+    common_endings: ['а', 'я', 'ы', 'и', 'е', 'ё', 'ю', 'й']
+    expand_entity_types: ['LOC', 'PER', 'ORG']
+    enable_final_cleaning: true 
 
 checkpoint:
   file: ./checkpoint_test.json
@@ -44,3 +78,5 @@ checkpoint:
 logging:
   level: INFO
   file: ./batch_test.log
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  verbose: true  # отключаем подробную отладку для скорости

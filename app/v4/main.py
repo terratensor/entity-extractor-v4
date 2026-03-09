@@ -205,6 +205,7 @@ class PipelineV4:
             input_queue=self.queue3,
             checkpoint_manager=self.checkpoint,
             stop_event=self.shutdown.stop_event,
+            verbose=self.config.logging.verbose,  # NEW
             name="Writer"
         )
         self.writer.start()
@@ -334,7 +335,7 @@ class PipelineV4:
         total_chunks = sum(s.get('processed_chunks', 0) for s in gpu_stats_list)
         total_gpu_docs = len(set().union(*[s.get('processed_docs', set()) for s in gpu_stats_list]))
         
-        # Объединяем статистику по сущностям
+        # Объединяем статистику по сущностям ИЗ GPU (она точнее)
         entities_by_type = {'LOC': 0, 'PER': 0, 'ORG': 0, 'MISC': 0}
         for gpu_stats in gpu_stats_list:
             for etype, count in gpu_stats.get('entities_by_type', {}).items():
@@ -347,7 +348,7 @@ class PipelineV4:
             'docs_completed': completed_docs,
             'chunks_processed': total_chunks,
             'unique_docs_in_gpu': total_gpu_docs,
-            'total_entities': writer_stats.get('total_entities', 0),
+            'total_entities': sum(entities_by_type.values()),  # Берем сумму из GPU
             'entities_by_type': entities_by_type,
             'bytes_written': writer_stats.get('bytes_written', 0),
             'chunks_per_second': round(total_chunks / elapsed if elapsed > 0 else 0, 2),
