@@ -220,12 +220,19 @@ class GPUWorker(StoppableThread):
         # Используем пайплайн с aggregation_strategy=None
         if not hasattr(self, 'ner_pipeline'):
             from transformers import pipeline
+            
+            # Правильный параметр - 'dtype', а не 'torch_dtype'
+            model_kwargs = {}
+            if self.precision == 'float16':
+                model_kwargs['dtype'] = torch.float16
+            
             self.ner_pipeline = pipeline(
                 "ner",
                 model=self.model,
                 tokenizer=self.tokenizer,
                 device=self.device,
-                aggregation_strategy=None
+                aggregation_strategy=None,
+                model_kwargs=model_kwargs
             )
         
         # Получаем сырые предсказания для всех текстов в батче
@@ -233,7 +240,16 @@ class GPUWorker(StoppableThread):
             batch_results = self.ner_pipeline(texts, batch_size=len(texts))
         except Exception as e:
             logger.error(f"Ошибка в пайплайне: {e}")
+            # В случае ошибки возвращаем пустые результаты для всех чанков
             batch_results = [[] for _ in texts]
+            
+            # Если ошибка связана с типами данных, пробуем пересоздать пайплайн с float32
+            if "Half but found Float" in str(e) and self.precision == 'float16':
+                logger.warning(f"{self.name}: пробуем пересоздать пайплайн с float32")
+                self.precision = 'float32'
+                delattr(self, 'ner_pipeline')
+                # Рекурсивный вызов с новым пайплайном
+                return self._process_batch(batch)
         
         results = []
         

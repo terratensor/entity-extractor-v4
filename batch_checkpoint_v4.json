@@ -1,0 +1,16 @@
+{
+  "last_id": 6056452479959201077,
+  "processed": 10000,
+  "stats": {
+    "processed": 10000,
+    "total_tokens": 0,
+    "entities_found": 0,
+    "entities_by_type": {},
+    "processing_time": 0,
+    "start_time": null,
+    "total_entities": 153403,
+    "bytes_written": 20243591
+  },
+  "timestamp": "2026-03-11T23:07:31.950630",
+  "version": "4.0"
+}
