@@ -19,7 +19,7 @@ source venv/bin/activate
 mkdir -p results_v4
 
 # Запускаем
-python -m app.v4.main --config config_v4.yaml --resume
+python -m app.v4.main --config config_v4.yaml --limit 100000 --resume
 
 # Сохраняем статус выхода
 EXIT_CODE=$?

@@ -168,7 +168,7 @@ class GPUWorker(StoppableThread):
             
             self.model = AutoModelForTokenClassification.from_pretrained(
                 self.model_name,
-                torch_dtype=dtype
+                dtype=dtype
             ).to(self.device)
             
             self.model.eval()
@@ -181,7 +181,7 @@ class GPUWorker(StoppableThread):
         except Exception as e:
             logger.error(f"{self.name}: ошибка загрузки модели: {e}")
             raise
-    
+
     def _collect_batch(self) -> List[Dict[str, Any]]:
         """
         Набирает батч из входной очереди.
@@ -220,20 +220,78 @@ class GPUWorker(StoppableThread):
         # Используем пайплайн с aggregation_strategy=None
         if not hasattr(self, 'ner_pipeline'):
             from transformers import pipeline
-            self.ner_pipeline = pipeline(
-                "ner",
-                model=self.model,
-                tokenizer=self.tokenizer,
-                device=self.device,
-                aggregation_strategy=None
-            )
+            
+            # Правильный параметр - 'dtype', а не 'torch_dtype'
+            model_kwargs = {}
+            if self.precision == 'float16':
+                model_kwargs['dtype'] = torch.float16
+            
+            try:
+                self.ner_pipeline = pipeline(
+                    "ner",
+                    model=self.model,
+                    tokenizer=self.tokenizer,
+                    device=self.device,
+                    aggregation_strategy=None,
+                    model_kwargs=model_kwargs
+                )
+            except Exception as e:
+                logger.error(f"{self.name}: ошибка создания пайплайна: {e}")
+                # Если ошибка при создании, пробуем перезагрузить модель
+                if self.precision == 'float16':
+                    logger.warning(f"{self.name}: пробуем перезагрузить модель")
+                    self.model = None
+                    self._load_model()  # загрузится с self.precision (float16)
+                    # Рекурсивный вызов
+                    return self._process_batch(batch)
+                else:
+                    # Если уже float32 и ошибка - возвращаем пустые результаты
+                    batch_results = [[] for _ in texts]
+                    # Формируем пустые результаты для всех чанков
+                    results = []
+                    for i, chunk in enumerate(batch):
+                        result = {
+                            'id': chunk['id'],
+                            'chunk_id': chunk['chunk_id'],
+                            'total_chunks': chunk['total_chunks'],
+                            'text': chunk['text'],
+                            'global_start': chunk.get('global_start', 0),
+                            'entities': [],
+                            'stats': {
+                                'tokens': len(chunk['input_ids']),
+                                'entities_count': 0
+                            }
+                        }
+                        results.append(result)
+                    return results
         
         # Получаем сырые предсказания для всех текстов в батче
         try:
             batch_results = self.ner_pipeline(texts, batch_size=len(texts))
         except Exception as e:
-            logger.error(f"Ошибка в пайплайне: {e}")
-            batch_results = [[] for _ in texts]
+            logger.error(f"{self.name}: ошибка в пайплайне: {e}")
+            
+            error_str = str(e).lower()
+            
+            # Если ошибка связана с типами данных
+            if "dtype" in error_str or "half" in error_str or "float" in error_str:
+                logger.warning(f"{self.name}: ошибка типов данных, перезагружаем модель")
+                
+                # Перезагружаем модель с тем же dtype (float16)
+                self.model = None
+                self.ner_pipeline = None
+                self._load_model()  # загрузится с self.precision (float16)
+                
+                # Удаляем старый пайплайн
+                if hasattr(self, 'ner_pipeline'):
+                    delattr(self, 'ner_pipeline')
+                
+                # Повторяем вызов
+                return self._process_batch(batch)
+            else:
+                # Другая ошибка - возвращаем пустые результаты
+                logger.error(f"{self.name}: необработанная ошибка, пропускаем батч")
+                batch_results = [[] for _ in texts]
         
         results = []
         

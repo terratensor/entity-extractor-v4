@@ -145,9 +145,21 @@ def get_last_letter_pos(
     """
     Находит позицию последней буквы в слове.
     """
+    # Защита от выхода за границы
+    if word_end > len(original_text):
+        word_end = len(original_text)
+    
     last_letter = word_end
-    while last_letter > word_start and not original_text[last_letter - 1].isalpha():
-        last_letter -= 1
+    while last_letter > word_start and last_letter - 1 < len(original_text):
+        if not original_text[last_letter - 1].isalpha():
+            last_letter -= 1
+        else:
+            break
+    
+    # Дополнительная защита: если ушли слишком далеко
+    if last_letter < word_start:
+        last_letter = word_start
+    
     return last_letter
 
 
@@ -161,11 +173,13 @@ def check_inner_range(
 ) -> bool:
     """
     Проверяет внутренний диапазон на разделители с учетом реальных границ слова.
-    Пробелы внутри слова разрешены (для многословных названий, например "Юрий Милославские").
-    
-    Returns:
-        bool: True если найден разделитель внутри слова
     """
+    # Защита от некорректных границ
+    if word_start < 0:
+        word_start = 0
+    if word_end > len(original_text):
+        word_end = len(original_text)
+    
     current_start = word_start
     current_end = word_end
     
@@ -179,12 +193,14 @@ def check_inner_range(
     check_start = max(start_pos, current_start)
     check_end = min(end_pos, last_letter)
     
+    # Дополнительная защита
+    if check_start >= check_end or check_start >= len(original_text):
+        return False
+    
     for pos in range(check_start, check_end):
         if pos >= len(original_text):
             break
         char = original_text[pos]
-        # Пробелы разрешены внутри слова (для многословных названий)
-        # Все остальные разделители (знаки препинания, скобки и т.д.) отменяют расширение
         if char in constants.WORD_BREAKS and char not in constants.ALL_QUOTES and char != '-' and char != ' ':
             if verbose:
                 logger.warning(f"         найден разделитель '{char}' на позиции {pos} внутри слова - расширение отменяется")

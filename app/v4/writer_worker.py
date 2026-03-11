@@ -309,7 +309,18 @@ class WriterWorker(StoppableThread):
             
             # Добавляем СПИСОК в буфер, csv.writer сам обработает экранирование
             self.buffer.append(row)
+            
+            # ======================================================================
+            # ОБНОВЛЕНИЕ СТАТИСТИКИ (ВАЖНО: ДО ПРОВЕРКИ ЧЕКПОИНТА)
+            # ======================================================================
             self.stats['total_entities'] += 1
+            etype = processed_entity.get('type', 'MISC')
+            self.stats['entities_by_type'][etype] += 1
+        
+        # ======================================================================
+        # ПРОВЕРКА ЧЕКПОИНТА ПОСЛЕ ОБНОВЛЕНИЯ СТАТИСТИКИ
+        # ======================================================================
+        self._check_checkpoint()
         
         # Периодический вывод статистики расширений
         if (self.enable_expansion and self.expander and 
@@ -320,7 +331,7 @@ class WriterWorker(StoppableThread):
             percent = exp_stats.get('expand_percent', 0)
             
             logger.info(f"📊 Статистика расширений: попыток={attempts}, "
-                       f"расширено={expanded} ({percent}%)")
+                    f"расширено={expanded} ({percent}%)")
     
     def _check_flush(self, file_handle) -> None:
         """Проверяет необходимость сброса буфера на диск."""
@@ -354,39 +365,40 @@ class WriterWorker(StoppableThread):
             getattr(self.checkpoint, 'save_interval', 1000)):
             
             last_id = max(self.completed_docs)
+            # Передаем ОБЩЕЕ количество обработанных документов
+            total_processed = self.stats['completed_docs']  # уже накоплено за всё время
+            
             self.checkpoint.save(
                 last_id=last_id,
-                processed=current_completed,
+                processed=total_processed,  # ← ИСПРАВЛЕНО
                 stats=self._get_checkpoint_stats()
             )
             self.last_checkpoint_save = current_completed
     
     def _get_checkpoint_stats(self) -> Dict:
         """Возвращает статистику для сохранения в чекпоинт."""
-        return {
-            'processed': self.stats['completed_docs'],
+        stats = {
             'total_entities': self.stats['total_entities'],
             'entities_by_type': dict(self.stats['entities_by_type']),
             'bytes_written': self.bytes_written
         }
+        logger.debug(f"Подготовлена статистика: {stats}")  # для отладки
+        return stats
     
     def _flush_buffer(self, file_handle) -> None:
         """Принудительный сброс буфера в указанный файл с использованием csv.writer."""
         if not self.buffer:
             return
         
-        # Создаем writer для этого файла с правильными параметрами экранирования
         writer = csv.writer(file_handle, delimiter=self.delimiter,
-                           quoting=csv.QUOTE_MINIMAL,
-                           doublequote=True,
-                           escapechar=None)
+                        quoting=csv.QUOTE_MINIMAL,
+                        doublequote=True,
+                        escapechar=None)
         
-        # Записываем все строки из буфера
         writer.writerows(self.buffer)
         file_handle.flush()
         os.fsync(file_handle.fileno())
         
-        # Обновляем статистику
         current_pos = file_handle.tell()
         self.bytes_written = current_pos
         self.buffer.clear()
@@ -394,6 +406,18 @@ class WriterWorker(StoppableThread):
         self.stats['buffer_flushes'] += 1
         
         logger.debug(f"{self.name}: буфер сброшен, записей: {len(self.buffer)}")
+        
+        # Сохраняем чекпоинт после сброса буфера
+        if self.completed_docs:
+            last_id = max(self.completed_docs)
+            total_processed = self.stats['completed_docs']  # ← ИСПРАВЛЕНО
+            
+            self.checkpoint.save(
+                last_id=last_id,
+                processed=total_processed,
+                stats=self._get_checkpoint_stats(),
+                force=True
+            )
     
     def get_stats(self) -> Dict[str, Any]:
         """Возвращает статистику работы воркера."""
