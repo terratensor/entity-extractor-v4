@@ -26,6 +26,7 @@ from app.v4.gpu_worker import GPUWorker
 from app.v4.writer_worker import WriterWorker
 from app.v4.checkpoint import CheckpointManager
 from app.v4.shutdown import GracefulShutdown
+from app.v4.version import VERSION_NAME
 
 # Настройка логирования
 logging.basicConfig(
@@ -85,7 +86,7 @@ class PipelineV4:
         }
         
         logger.info("=" * 60)
-        logger.info("🚀 ИНИЦИАЛИЗАЦИЯ КОНВЕЙЕРА V4")
+        logger.info("🚀 ИНИЦИАЛИЗАЦИЯ КОНВЕЙЕРА v{VERSION_NAME}")
         logger.info("=" * 60)
         logger.info(f"Конфиг: {config_path}")
         logger.info(f"Лимит документов: {limit if limit else 'без лимита'}")

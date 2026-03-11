@@ -11,6 +11,7 @@ import logging
 from datetime import datetime
 from typing import Dict, Optional, Any
 from pathlib import Path
+from .version import VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +104,7 @@ class CheckpointManager:
             'processed': self.processed,
             'stats': self.stats,
             'timestamp': datetime.now().isoformat(),
-            'version': '4.1'  # увеличиваем версию
+            'version': VERSION,
         }
         
         try:

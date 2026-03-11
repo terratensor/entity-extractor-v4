@@ -6,9 +6,10 @@
 """
 
 from pathlib import Path
+from .version import VERSION_FULL as VERSION
 
 # Версия
-VERSION = "4.0.0"
+__version__ = VERSION
 
 # Директории по умолчанию
 DEFAULT_RESULTS_DIR = Path("results_v4")
