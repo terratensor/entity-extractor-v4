@@ -168,7 +168,7 @@ class GPUWorker(StoppableThread):
             
             self.model = AutoModelForTokenClassification.from_pretrained(
                 self.model_name,
-                torch_dtype=dtype
+                dtype=dtype
             ).to(self.device)
             
             self.model.eval()
@@ -181,7 +181,7 @@ class GPUWorker(StoppableThread):
         except Exception as e:
             logger.error(f"{self.name}: ошибка загрузки модели: {e}")
             raise
-    
+
     def _collect_batch(self) -> List[Dict[str, Any]]:
         """
         Набирает батч из входной очереди.
@@ -237,12 +237,11 @@ class GPUWorker(StoppableThread):
                 )
             except Exception as e:
                 logger.error(f"{self.name}: ошибка создания пайплайна: {e}")
-                # Если ошибка при создании, пробуем float32
+                # Если ошибка при создании, пробуем перезагрузить модель
                 if self.precision == 'float16':
-                    logger.warning(f"{self.name}: пробуем создать пайплайн с float32")
-                    self.precision = 'float32'
-                    # Перезагружаем модель в float32
-                    self._load_model()
+                    logger.warning(f"{self.name}: пробуем перезагрузить модель")
+                    self.model = None
+                    self._load_model()  # загрузится с self.precision (float16)
                     # Рекурсивный вызов
                     return self._process_batch(batch)
                 else:
@@ -272,27 +271,22 @@ class GPUWorker(StoppableThread):
         except Exception as e:
             logger.error(f"{self.name}: ошибка в пайплайне: {e}")
             
-            # Анализируем ошибку
             error_str = str(e).lower()
             
-            # Если ошибка связана с типами данных и мы в float16
-            if ("dtype" in error_str or "half" in error_str or "float" in error_str) and self.precision == 'float16':
-                logger.warning(f"{self.name}: ошибка типов данных, переключаемся на float32")
+            # Если ошибка связана с типами данных
+            if "dtype" in error_str or "half" in error_str or "float" in error_str:
+                logger.warning(f"{self.name}: ошибка типов данных, перезагружаем модель")
                 
-                # Меняем precision
-                self.precision = 'float32'
-                
-                # Перезагружаем модель в float32
-                logger.info(f"{self.name}: перезагрузка модели в float32")
+                # Перезагружаем модель с тем же dtype (float16)
                 self.model = None
                 self.ner_pipeline = None
-                self._load_model()
+                self._load_model()  # загрузится с self.precision (float16)
                 
                 # Удаляем старый пайплайн
                 if hasattr(self, 'ner_pipeline'):
                     delattr(self, 'ner_pipeline')
                 
-                # Повторяем вызов с новым пайплайном
+                # Повторяем вызов
                 return self._process_batch(batch)
             else:
                 # Другая ошибка - возвращаем пустые результаты
