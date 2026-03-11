@@ -226,30 +226,78 @@ class GPUWorker(StoppableThread):
             if self.precision == 'float16':
                 model_kwargs['dtype'] = torch.float16
             
-            self.ner_pipeline = pipeline(
-                "ner",
-                model=self.model,
-                tokenizer=self.tokenizer,
-                device=self.device,
-                aggregation_strategy=None,
-                model_kwargs=model_kwargs
-            )
+            try:
+                self.ner_pipeline = pipeline(
+                    "ner",
+                    model=self.model,
+                    tokenizer=self.tokenizer,
+                    device=self.device,
+                    aggregation_strategy=None,
+                    model_kwargs=model_kwargs
+                )
+            except Exception as e:
+                logger.error(f"{self.name}: ошибка создания пайплайна: {e}")
+                # Если ошибка при создании, пробуем float32
+                if self.precision == 'float16':
+                    logger.warning(f"{self.name}: пробуем создать пайплайн с float32")
+                    self.precision = 'float32'
+                    # Перезагружаем модель в float32
+                    self._load_model()
+                    # Рекурсивный вызов
+                    return self._process_batch(batch)
+                else:
+                    # Если уже float32 и ошибка - возвращаем пустые результаты
+                    batch_results = [[] for _ in texts]
+                    # Формируем пустые результаты для всех чанков
+                    results = []
+                    for i, chunk in enumerate(batch):
+                        result = {
+                            'id': chunk['id'],
+                            'chunk_id': chunk['chunk_id'],
+                            'total_chunks': chunk['total_chunks'],
+                            'text': chunk['text'],
+                            'global_start': chunk.get('global_start', 0),
+                            'entities': [],
+                            'stats': {
+                                'tokens': len(chunk['input_ids']),
+                                'entities_count': 0
+                            }
+                        }
+                        results.append(result)
+                    return results
         
         # Получаем сырые предсказания для всех текстов в батче
         try:
             batch_results = self.ner_pipeline(texts, batch_size=len(texts))
         except Exception as e:
-            logger.error(f"Ошибка в пайплайне: {e}")
-            # В случае ошибки возвращаем пустые результаты для всех чанков
-            batch_results = [[] for _ in texts]
+            logger.error(f"{self.name}: ошибка в пайплайне: {e}")
             
-            # Если ошибка связана с типами данных, пробуем пересоздать пайплайн с float32
-            if "Half but found Float" in str(e) and self.precision == 'float16':
-                logger.warning(f"{self.name}: пробуем пересоздать пайплайн с float32")
+            # Анализируем ошибку
+            error_str = str(e).lower()
+            
+            # Если ошибка связана с типами данных и мы в float16
+            if ("dtype" in error_str or "half" in error_str or "float" in error_str) and self.precision == 'float16':
+                logger.warning(f"{self.name}: ошибка типов данных, переключаемся на float32")
+                
+                # Меняем precision
                 self.precision = 'float32'
-                delattr(self, 'ner_pipeline')
-                # Рекурсивный вызов с новым пайплайном
+                
+                # Перезагружаем модель в float32
+                logger.info(f"{self.name}: перезагрузка модели в float32")
+                self.model = None
+                self.ner_pipeline = None
+                self._load_model()
+                
+                # Удаляем старый пайплайн
+                if hasattr(self, 'ner_pipeline'):
+                    delattr(self, 'ner_pipeline')
+                
+                # Повторяем вызов с новым пайплайном
                 return self._process_batch(batch)
+            else:
+                # Другая ошибка - возвращаем пустые результаты
+                logger.error(f"{self.name}: необработанная ошибка, пропускаем батч")
+                batch_results = [[] for _ in texts]
         
         results = []
         

@@ -62,6 +62,7 @@ class PipelineV4:
             self.config.checkpoint.file,
             save_interval=self.config.checkpoint.save_interval
         )
+        self.checkpoint.start_session()  # отмечаем начало сессии
         
         # Очереди
         self.queue1 = Queue(maxsize=self.config.queues.queue1_size)  # сырые документы
