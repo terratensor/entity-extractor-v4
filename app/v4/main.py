@@ -26,7 +26,7 @@ from app.v4.gpu_worker import GPUWorker
 from app.v4.writer_worker import WriterWorker
 from app.v4.checkpoint import CheckpointManager
 from app.v4.shutdown import GracefulShutdown
-from app.v4.version import VERSION_NAME
+from app.v4.version import VERSION, VERSION_NAME, GIT_COMMIT, BUILD_TIME
 
 # Настройка логирования
 logging.basicConfig(
@@ -39,6 +39,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def show_version():
+    """Показывает информацию о версии."""
+    print(f"Entity Extractor v4")
+    print(f"Версия: {VERSION}")
+    print(f"Версия (краткая): {VERSION_NAME}")
+    print(f"Git commit: {GIT_COMMIT}")
+    print(f"Время сборки: {BUILD_TIME}")
+    print("\nМодель: Davlan/xlm-roberta-large-ner-hrl")
+    print("Автор: audetv")
+    print("Лицензия: MIT")
+    sys.exit(0)
 
 class PipelineV4:
     """
@@ -369,8 +380,14 @@ def main():
                        help='Возобновить с последнего чекпоинта')
     parser.add_argument('--limit', type=int,
                        help='Ограничить количество документов (для теста)')
+    parser.add_argument('--version', '-v', action='store_true',
+                       help='Показать информацию о версии')
     
     args = parser.parse_args()
+    
+    # Если запрошена версия - показываем и выходим
+    if args.version:
+        show_version()
     
     # Загружаем конфиг
     if not os.path.exists(args.config):
